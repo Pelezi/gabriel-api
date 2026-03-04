@@ -67,7 +67,11 @@ async function bootstrap(): Promise<void> {
     // Register multipart/form-data support for file uploads
     await app.register(require('@fastify/multipart'), {
         limits: {
-            fileSize: 10 * 1024 * 1024, // 10MB limit
+            fileSize: 50 * 1024 * 1024, // 50MB max file size
+            files: 10, // Maximum number of file fields
+            fieldSize: 100 * 1024 * 1024, // 100MB max field size (for JSON data)
+            fields: 100, // Maximum number of non-file fields
+
         }
     });
 
