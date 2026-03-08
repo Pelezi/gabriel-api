@@ -3,172 +3,236 @@ import { LoggerService } from '../../common/provider';
 import { PrismaService } from '../../common';
 import { WhatsAppApiHelper } from '../helpers';
 import { $Enums } from '../../../generated/prisma/client';
-import { NotificationService } from '../../notification';
+// import { NotificationService } from '../../notification';
 import { AwsService } from '../../common/provider/aws.provider';
 import { v4 as uuidv4 } from 'uuid';
-import axios from 'axios';
+// import axios from 'axios';
 
 @Injectable()
 export class WhatsappService {
 
     private whatsappApi: WhatsAppApiHelper;
+    // private projectCheckLocks = new Map<string, Promise<number[]>>();
+    // private projectCheckCache = new Map<string, { projectIds: number[], timestamp: number }>();
 
     public constructor(
         private readonly logger: LoggerService,
         private readonly prisma: PrismaService,
-        private readonly notificationService: NotificationService,
+        // private readonly notificationService: NotificationService,
         private readonly awsService: AwsService
     ) {
         this.whatsappApi = new WhatsAppApiHelper();
     }
 
-    /**
-     * Check which projects contain this phone number
-     * 
-     * @param phoneNumber WhatsApp phone number
-     * @returns Array of project IDs where the number exists
-     */
-    private async checkContactInProjects(phoneNumber: string): Promise<number[]> {
-        try {
-            const projects = await this.prisma.project.findMany();
-            const projectIds: number[] = [];
+    // /**
+    //  * Check which projects contain this phone number (with caching and locks)
+    //  * 
+    //  * @param phoneNumber WhatsApp phone number
+    //  * @returns Array of project IDs where the number exists
+    //  */
+    // private async checkContactInProjectsWithCache(phoneNumber: string): Promise<number[]> {
+    //     // Check cache first
+    //     const cached = this.projectCheckCache.get(phoneNumber);
+    //     const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-            for (const project of projects) {
-                try {
-                    // Skip if both apiUrl and userNumbersApiUrl are not configured
-                    if (!project.apiUrl || !project.userNumbersApiUrl) {
-                        continue;
-                    }
+    //     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    //         console.log(`Using cached project check for ${phoneNumber}`);
+    //         return cached.projectIds;
+    //     }
 
-                    const headers: any = {};
-                    if (project.apiKey) {
-                        headers['X-API-KEY'] = project.apiKey;
-                    }
+    //     // Check if already checking (prevent race conditions)
+    //     const existingCheck = this.projectCheckLocks.get(phoneNumber);
+    //     if (existingCheck) {
+    //         console.log(`Waiting for existing project check for ${phoneNumber}`);
+    //         return existingCheck;
+    //     }
 
-                    // Combine base URL with route
-                    const baseUrl = project.apiUrl.replace(/\/$/, '');
-                    const route = project.userNumbersApiUrl.startsWith('/') 
-                        ? project.userNumbersApiUrl 
-                        : `/${project.userNumbersApiUrl}`;
-                    const fullUrl = `${baseUrl}${route}`;
+    //     // Create new check promise
+    //     const checkPromise = this.checkContactInProjects(phoneNumber);
+    //     this.projectCheckLocks.set(phoneNumber, checkPromise);
 
-                    const response = await axios.get(fullUrl, {
-                        params: { phone: phoneNumber },
-                        timeout: 63000,
-                        headers,
-                    });
-
-                    if (response.data === true || response.data?.exists === true) {
-                        projectIds.push(project.id);
-                    }
-                } catch (error) {
-                    console.log(`Erro buscando a api do projeto ${project.name}: ${error.message}`);
-                }
-            }
-
-            return projectIds;
-        } catch (error) {
-            console.log(`Erro buscando contato nos projetos: ${error}`);
-            return [];
-        }
-    }
-
-    /**
-     * Handle project selection by contact
-     * 
-     * @param contact Contact object
-     * @param projectIds Available project IDs
-     * @param conversationId Optional conversation ID for sending messages
-     */
-    private async handleProjectSelection(contact: any, projectIds: number[], conversationId?: string): Promise<void> {
-        try {
-            if (projectIds.length === 0) {
-                // Contact not in any project - clear project association
-                await this.prisma.contact.update({
-                    where: { id: contact.id },
-                    data: {
-                        projectId: null,
-                        pendingProjectSelection: false,
-                        availableProjectIds: null,
-                    },
-                });
-                return;
-            }
-
-            if (projectIds.length === 1) {
-                // Automatically select the only project
-                await this.prisma.contact.update({
-                    where: { id: contact.id },
-                    data: {
-                        projectId: projectIds[0],
-                        pendingProjectSelection: false,
-                        availableProjectIds: null,
-                    },
-                });
-
-                // Send message informing which project was detected
-                const detectedProject = await this.prisma.project.findUnique({
-                    where: { id: projectIds[0] },
-                });
-
-                if (detectedProject && conversationId) {
-                    const detectedText = `✅ Número encontrado! Você foi detectado no projeto: *${detectedProject.name}*`;
-                    const detectedMsg = await this.whatsappApi.sendTextMessage(contact.waId, detectedText);
-                    await this.saveOutboundMessage(conversationId, contact.id, detectedText, detectedMsg?.messages?.[0]?.id);
-                }
-
-                return;
-            }
-
-            // Multiple projects - ask user to choose
-            const projects = await this.prisma.project.findMany({
-                where: { id: { in: projectIds } },
-            });
-
-            let message = 'Você está cadastrado em múltiplos projetos. Por favor, escolha sobre qual projeto deseja falar:\n\n';
-            projects.forEach((project) => {
-                message += `${project.id} - ${project.name}\n`;
-            });
-            message += '\nDigite o número do projeto que deseja discutir.';
-
-            // Send the selection message
-            const sentMessage = await this.whatsappApi.sendTextMessage(contact.waId, message);
-
-            // Get or create conversation for saving the outbound message
-            let conversation;
-            if (conversationId) {
-                conversation = await this.prisma.conversation.findUnique({
-                    where: { id: conversationId },
-                });
-            }
+    //     try {
+    //         const projectIds = await checkPromise;
             
-            if (!conversation) {
-                conversation = await this.prisma.conversation.upsert({
-                    where: { contactId: contact.id },
-                    update: {},
-                    create: {
-                        contactId: contact.id,
-                        unreadCount: 0,
-                    },
-                });
-            }
+    //         // Cache the result
+    //         this.projectCheckCache.set(phoneNumber, {
+    //             projectIds,
+    //             timestamp: Date.now()
+    //         });
 
-            // Save the outbound message
-            await this.saveOutboundMessage(conversation.id, contact.id, message, sentMessage?.messages?.[0]?.id);
+    //         return projectIds;
+    //     } finally {
+    //         // Cleanup lock after 5 seconds
+    //         setTimeout(() => this.projectCheckLocks.delete(phoneNumber), 5000);
+    //     }
+    // }
 
-            // Update contact to pending selection state
-            await this.prisma.contact.update({
-                where: { id: contact.id },
-                data: {
-                    pendingProjectSelection: true,
-                    availableProjectIds: projectIds.join(','),
-                    projectId: null,
-                },
-            });
-        } catch (error) {
-            console.log(`Error handling project selection: ${error}`);
-        }
-    }
+    // /**
+    //  * Check which projects contain this phone number (parallel API calls)
+    //  * 
+    //  * @param phoneNumber WhatsApp phone number
+    //  * @returns Array of project IDs where the number exists
+    //  */
+    // private async checkContactInProjects(phoneNumber: string): Promise<number[]> {
+    //     try {
+    //         // Filter projects with required configuration
+    //         const projects = await this.prisma.project.findMany({
+    //             where: {
+    //                 AND: [
+    //                     { apiUrl: { not: null } },
+    //                     { userNumbersApiUrl: { not: null } }
+    //                 ]
+    //             }
+    //         });
+
+    //         console.log(`Checking ${projects.length} projects for phone ${phoneNumber}`);
+
+    //         // Parallel API calls for better performance
+    //         const results = await Promise.allSettled(
+    //             projects.map(async (project) => {
+    //                 try {
+    //                     const headers: any = {};
+    //                     if (project.apiKey) {
+    //                         headers['X-API-KEY'] = project.apiKey;
+    //                     }
+
+    //                     const baseUrl = project.apiUrl!.replace(/\/$/, '');
+    //                     const route = project.userNumbersApiUrl!.startsWith('/') 
+    //                         ? project.userNumbersApiUrl 
+    //                         : `/${project.userNumbersApiUrl}`;
+    //                     const fullUrl = `${baseUrl}${route}`;
+
+    //                     const response = await axios.get(fullUrl, {
+    //                         params: { phone: phoneNumber },
+    //                         timeout: 5000, // Reduced from 63s to 5s
+    //                         headers,
+    //                     });
+
+    //                     const exists = response.data === true || response.data?.exists === true;
+    //                     return { projectId: project.id, projectName: project.name, exists };
+    //                 } catch (error) {
+    //                     console.log(`Error checking project ${project.name}: ${error.message}`);
+    //                     return { projectId: project.id, projectName: project.name, exists: false };
+    //                 }
+    //             })
+    //         );
+
+    //         // Extract successful results
+    //         const projectIds = results
+    //             .filter(r => r.status === 'fulfilled' && r.value.exists)
+    //             .map(r => (r as PromiseFulfilledResult<any>).value.projectId);
+
+    //         const failures = results.filter(r => r.status === 'rejected');
+    //         if (failures.length > 0) {
+    //             console.log(`⚠️ ${failures.length}/${projects.length} project checks failed`);
+    //         }
+
+    //         console.log(`Found ${projectIds.length} matching projects for ${phoneNumber}`);
+    //         return projectIds;
+    //     } catch (error) {
+    //         console.log(`Error checking contact in projects: ${error}`);
+    //         return [];
+    //     }
+    // }
+
+    // /**
+    //  * Handle project selection by contact
+    //  * 
+    //  * @param contact Contact object
+    //  * @param projectIds Available project IDs
+    //  * @param conversationId Optional conversation ID for sending messages
+    //  */
+    // private async handleProjectSelection(contact: any, projectIds: number[], conversationId?: string): Promise<void> {
+    //     try {
+    //         if (projectIds.length === 0) {
+    //             // Contact not in any project - clear project association
+    //             await this.prisma.contact.update({
+    //                 where: { id: contact.id },
+    //                 data: {
+    //                     projectId: null,
+    //                     pendingProjectSelection: false,
+    //                     availableProjectIds: null,
+    //                 },
+    //             });
+    //             return;
+    //         }
+
+    //         if (projectIds.length === 1) {
+    //             // Automatically select the only project
+    //             await this.prisma.contact.update({
+    //                 where: { id: contact.id },
+    //                 data: {
+    //                     projectId: projectIds[0],
+    //                     pendingProjectSelection: false,
+    //                     availableProjectIds: null,
+    //                 },
+    //             });
+
+    //             // Send message informing which project was detected
+    //             const detectedProject = await this.prisma.project.findUnique({
+    //                 where: { id: projectIds[0] },
+    //             });
+
+    //             if (detectedProject && conversationId) {
+    //                 const detectedText = `✅ Número encontrado! Você foi detectado no projeto: *${detectedProject.name}*`;
+    //                 const detectedMsg = await this.whatsappApi.sendTextMessage(contact.waId, detectedText);
+    //                 await this.saveOutboundMessage(conversationId, contact.id, detectedText, detectedMsg?.messages?.[0]?.id);
+    //             }
+
+    //             return;
+    //         }
+
+    //         // Multiple projects - ask user to choose
+    //         const projects = await this.prisma.project.findMany({
+    //             where: { id: { in: projectIds } },
+    //         });
+
+    //         let message = '📋 *Múltiplos Projetos Encontrados*\n\n';
+    //         message += 'Você está cadastrado nos seguintes projetos:\n\n';
+    //         projects.forEach((project) => {
+    //             message += `*${project.id}* - ${project.name}\n`;
+    //         });
+    //             message += '\n💬 *Responda com o número* do projeto desejado.';
+    //         message += '\n❌ Digite *cancelar* para sair.';
+
+    //         // Send the selection message
+    //         const sentMessage = await this.whatsappApi.sendTextMessage(contact.waId, message);
+
+    //         // Get or create conversation for saving the outbound message
+    //         let conversation;
+    //         if (conversationId) {
+    //             conversation = await this.prisma.conversation.findUnique({
+    //                 where: { id: conversationId },
+    //             });
+    //         }
+            
+    //         if (!conversation) {
+    //             conversation = await this.prisma.conversation.upsert({
+    //                 where: { contactId: contact.id },
+    //                 update: {},
+    //                 create: {
+    //                     contactId: contact.id,
+    //                     unreadCount: 0,
+    //                 },
+    //             });
+    //         }
+
+    //         // Save the outbound message
+    //         await this.saveOutboundMessage(conversation.id, contact.id, message, sentMessage?.messages?.[0]?.id);
+
+    //         // Update contact to pending selection state
+    //         await this.prisma.contact.update({
+    //             where: { id: contact.id },
+    //             data: {
+    //                 pendingProjectSelection: true,
+    //                 availableProjectIds: projectIds.join(','),
+    //                 projectId: null,
+    //             },
+    //         });
+    //     } catch (error) {
+    //         console.log(`Error handling project selection: ${error}`);
+    //     }
+    // }
 
     /**
      * Find contact with Brazilian number variations (with/without the 9th digit)
@@ -315,7 +379,7 @@ export class WhatsappService {
                 },
             });
 
-            // Check if this is the first message from this contact
+            // Check if this is the first message from this contact (including outbound)
             const existingMessagesCount = await this.prisma.message.count({
                 where: { contactId: dbContact.id },
             });
@@ -329,134 +393,156 @@ export class WhatsappService {
                 const welcomeMsg = await this.whatsappApi.sendTextMessage(contact.wa_id, welcomeText);
                 await this.saveOutboundMessage(conversation.id, dbContact.id, welcomeText, welcomeMsg?.messages?.[0]?.id);
 
-                // Second message about checking registration
-                const checkingText = `Estamos conferindo se o seu número está cadastrado em algum projeto para direcioná-lo corretamente...`;
-                const checkingMsg = await this.whatsappApi.sendTextMessage(contact.wa_id, checkingText);
-                await this.saveOutboundMessage(conversation.id, dbContact.id, checkingText, checkingMsg?.messages?.[0]?.id);
+                // // Second message about checking registration
+                // const checkingText = `Estamos conferindo se o seu número está cadastrado em algum projeto para direcioná-lo corretamente...`;
+                // const checkingMsg = await this.whatsappApi.sendTextMessage(contact.wa_id, checkingText);
+                // await this.saveOutboundMessage(conversation.id, dbContact.id, checkingText, checkingMsg?.messages?.[0]?.id);
             }
 
-            // Handle project selection logic
-            const messageText = message.type === 'text' ? message.text.body.trim() : '';
-
-            // Check if user sent "0" to reset project selection
-            if (messageText === '0') {
-                const projectIds = await this.checkContactInProjects(contact.wa_id);
-                await this.handleProjectSelection(dbContact, projectIds, conversation.id);
-
-                // Still save the message before returning
-                await this.saveIncomingMessage(message, conversation.id, dbContact.id);
-                return;
-            }
-
-            // If contact is pending project selection, handle their choice
-            if (dbContact.pendingProjectSelection && messageText) {
-                const availableIds = dbContact.availableProjectIds?.split(',').map(Number) || [];
-                const selectedProjectId = parseInt(messageText);
-
-                if (availableIds.includes(selectedProjectId)) {
-                    // Valid selection - set the project
-                    await this.prisma.contact.update({
-                        where: { id: dbContact.id },
-                        data: {
-                            projectId: selectedProjectId,
-                            pendingProjectSelection: false,
-                            availableProjectIds: null,
-                        },
-                    });
-
-                    const selectedProject = await this.prisma.project.findUnique({
-                        where: { id: selectedProjectId },
-                    });
-
-                    const confirmationText = `Perfeito! Agora vamos falar sobre o projeto: ${selectedProject?.name}. Como posso ajudá-lo?`;
-                    const sentMessage = await this.whatsappApi.sendTextMessage(
-                        contact.wa_id,
-                        confirmationText
-                    );
-
-                    // Save the outbound message
-                    await this.saveOutboundMessage(conversation.id, dbContact.id, confirmationText, sentMessage?.messages?.[0]?.id);
-
-                    // Still save the message before returning
-                    await this.saveIncomingMessage(message, conversation.id, dbContact.id);
-                    return;
-                } else {
-                    // Invalid selection - ask again
-                    const errorText = `Opção inválida. Por favor, escolha um dos números listados.`;
-                    const sentMessage = await this.whatsappApi.sendTextMessage(
-                        contact.wa_id,
-                        errorText
-                    );
-
-                    // Save the outbound message
-                    await this.saveOutboundMessage(conversation.id, dbContact.id, errorText, sentMessage?.messages?.[0]?.id);
-
-                    // Still save the message before returning
-                    await this.saveIncomingMessage(message, conversation.id, dbContact.id);
-                    return;
-                }
-            }
-
-            // If contact doesn't have a project assigned, check projects
-            if (!dbContact.projectId) {
-                const projectIds = await this.checkContactInProjects(contact.wa_id);
-                await this.handleProjectSelection(dbContact, projectIds, conversation.id);
-
-                // If still no project after selection (not in any project), notify
-                const updatedContact = await this.prisma.contact.findUnique({
-                    where: { id: dbContact.id },
-                });
-
-                if (!updatedContact?.projectId && !updatedContact?.pendingProjectSelection) {
-                    const notRegisteredText = `Desculpe, você não está cadastrado em nenhum projeto no momento.`;
-                    const sentMessage = await this.whatsappApi.sendTextMessage(
-                        contact.wa_id,
-                        notRegisteredText
-                    );
-
-                    // Save the outbound message
-                    await this.saveOutboundMessage(conversation.id, dbContact.id, notRegisteredText, sentMessage?.messages?.[0]?.id);
-
-                    // Still save the message before returning
-                    await this.saveIncomingMessage(message, conversation.id, dbContact.id);
-                    return;
-                }
-
-                // If now pending selection, the message was sent
-                if (updatedContact?.pendingProjectSelection) {
-                    // Still save the message before returning
-                    await this.saveIncomingMessage(message, conversation.id, dbContact.id);
-                    return;
-                }
-
-                // Update dbContact reference with the newly assigned project
-                dbContact = updatedContact;
-            }
-
-            // Save the regular message
+            // Save the incoming message first (ensures webhook responds quickly)
             await this.saveIncomingMessage(message, conversation.id, dbContact.id);
 
-            // Send push notification for new message
-            try {
-                const contactDisplayName = dbContact.customName || dbContact.name || dbContact.waId;
-                const messageBody = message.type === 'text' 
-                    ? message.text.body 
-                    : `Nova mensagem (${message.type})`;
-                await this.notificationService.notifyNewMessage(
-                    contactDisplayName,
-                    messageBody,
-                    conversation.id
-                );
-            } catch (error) {
-                console.log('Error sending push notification:', error.message);
-            }
+            // // Handle project selection logic in background (non-blocking)
+            // setImmediate(() => {
+            //     this.processMessageLogic(dbContact, contact, message, conversation)
+            //         .catch(err => console.log('Error in background message processing:', err));
+            // });
 
-            this.logger.info(`Saved ${message.type} message from ${contact.profile?.name || contact.wa_id}`);
         } catch (error) {
             console.log('Error handling incoming message:', error);
             throw new HttpException('Error handling incoming message', HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
+
+    // /**
+    //  * Process message logic in background (non-blocking)
+    //  */
+    // private async processMessageLogic(dbContact: any, contact: any, message: any, conversation: any): Promise<void> {
+    //     try {
+    //         const messageText = message.type === 'text' ? message.text.body.trim() : '';
+
+    //         // Check if user sent "0" or "trocar projeto" to reset project selection
+    //         if (messageText === '0' || messageText.toLowerCase() === 'trocar projeto') {
+    //             await this.prisma.contact.update({
+    //                 where: { id: dbContact.id },
+    //                 data: { projectId: null, pendingProjectSelection: false }
+    //             });
+                
+    //             const projectIds = await this.checkContactInProjectsWithCache(contact.wa_id);
+    //             await this.handleProjectSelection(dbContact, projectIds, conversation.id);
+    //             return;
+    //         }
+
+    //         // If contact is pending project selection, handle their choice
+    //         if (dbContact.pendingProjectSelection && messageText) {
+    //             // Handle cancellation
+    //             if (messageText.toLowerCase() === 'cancelar') {
+    //                 await this.prisma.contact.update({
+    //                     where: { id: dbContact.id },
+    //                     data: {
+    //                         pendingProjectSelection: false,
+    //                         availableProjectIds: null,
+    //                     },
+    //                 });
+                    
+    //                 const cancelMsg = '❌ Seleção cancelada. Envie uma mensagem quando precisar.';
+    //                 const sentMsg = await this.whatsappApi.sendTextMessage(contact.wa_id, cancelMsg);
+    //                 await this.saveOutboundMessage(conversation.id, dbContact.id, cancelMsg, sentMsg?.messages?.[0]?.id);
+    //                 return;
+    //             }
+
+    //             const availableIds = dbContact.availableProjectIds?.split(',').map(Number) || [];
+    //             const selectedProjectId = parseInt(messageText);
+
+    //             if (availableIds.includes(selectedProjectId)) {
+    //                 // Valid selection - set the project
+    //                 await this.prisma.contact.update({
+    //                     where: { id: dbContact.id },
+    //                     data: {
+    //                         projectId: selectedProjectId,
+    //                         pendingProjectSelection: false,
+    //                         availableProjectIds: null,
+    //                     },
+    //                 });
+
+    //                 const selectedProject = await this.prisma.project.findUnique({
+    //                     where: { id: selectedProjectId },
+    //                 });
+
+    //                 const confirmationText = `✅ Perfeito! Agora vamos falar sobre o projeto: *${selectedProject?.name}*. Como posso ajudá-lo?`;
+    //                 const sentMessage = await this.whatsappApi.sendTextMessage(
+    //                     contact.wa_id,
+    //                     confirmationText
+    //                 );
+
+    //                 // Save the outbound message
+    //                 await this.saveOutboundMessage(conversation.id, dbContact.id, confirmationText, sentMessage?.messages?.[0]?.id);
+    //                 return;
+    //             } else {
+    //                 // Invalid selection - ask again
+    //                 const errorText = `⚠️ Opção inválida. Por favor, escolha um dos números listados ou digite *cancelar*.`;
+    //                 const sentMessage = await this.whatsappApi.sendTextMessage(
+    //                     contact.wa_id,
+    //                     errorText
+    //                 );
+
+    //                 // Save the outbound message
+    //                 await this.saveOutboundMessage(conversation.id, dbContact.id, errorText, sentMessage?.messages?.[0]?.id);
+    //                 return;
+    //             }
+    //         }
+
+    //         // If contact doesn't have a project assigned, check projects
+    //         if (!dbContact.projectId) {
+    //             const projectIds = await this.checkContactInProjectsWithCache(contact.wa_id);
+    //             await this.handleProjectSelection(dbContact, projectIds, conversation.id);
+
+    //             // If still no project after selection (not in any project), notify
+    //             const updatedContact = await this.prisma.contact.findUnique({
+    //                 where: { id: dbContact.id },
+    //             });
+
+    //             if (!updatedContact?.projectId && !updatedContact?.pendingProjectSelection) {
+    //                 const notRegisteredText = `❌ Desculpe, você não está cadastrado em nenhum projeto no momento.`;
+    //                 const sentMessage = await this.whatsappApi.sendTextMessage(
+    //                     contact.wa_id,
+    //                     notRegisteredText
+    //                 );
+
+    //                 // Save the outbound message
+    //                 await this.saveOutboundMessage(conversation.id, dbContact.id, notRegisteredText, sentMessage?.messages?.[0]?.id);
+    //                 return;
+    //             }
+
+    //             // If now pending selection, the message was sent
+    //             if (updatedContact?.pendingProjectSelection) {
+    //                 return;
+    //             }
+
+    //             // Update dbContact reference with the newly assigned project
+    //             dbContact = updatedContact;
+    //         }
+
+    //         // Send push notification for regular message
+    //         try {
+    //             const contactDisplayName = dbContact.customName || dbContact.name || dbContact.waId;
+    //             const messageBody = message.type === 'text' 
+    //                 ? message.text.body 
+    //                 : `Nova mensagem (${message.type})`;
+    //             await this.notificationService.notifyNewMessage(
+    //                 contactDisplayName,
+    //                 messageBody,
+    //                 conversation.id
+    //             );
+    //         } catch (error) {
+    //             console.log('Error sending push notification:', error.message);
+    //         }
+
+    //         this.logger.info(`Processed ${message.type} message from ${contact.profile?.name || contact.wa_id}`);
+    //     } catch (error) {
+    //         console.log('Error in message processing logic:', error);
+    //     }
+    // }
 
     /**
      * Save incoming message to database
