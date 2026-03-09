@@ -1069,7 +1069,7 @@ export class WhatsappService {
         platformUrl: string,
         login: string,
         password: string,
-        requestHost: string
+        projectId?: number
     ): Promise<any> {
         try {
             const components = [
@@ -1132,35 +1132,13 @@ export class WhatsappService {
             // Check for existing contact with Brazilian number variations (with/without 9)
             let dbContact = await this.findContactWithBrVariations(to);
 
-            // Find project that matches the request host
-            let matchingProject = null;
-            try {
-                // Remove port from host if present (e.g., "example.com:3000" -> "example.com")
-                const hostname = requestHost.split(':')[0];
-                
-                // Find project where apiUrl contains the request hostname
-                const projects = await this.prisma.project.findMany({
-                    where: {
-                        apiUrl: {
-                            contains: hostname,
-                        },
-                    },
-                });
-
-                if (projects.length > 0) {
-                    matchingProject = projects[0];
-                }
-            } catch (error) {
-                console.log('Error matching project by request host:', error.message);
-            }
-
             // If no existing contact found, create a new one with custom name and project
             if (!dbContact) {
                 dbContact = await this.prisma.contact.create({
                     data: {
                         waId: to,
                         customName: name, // Set custom name from invite
-                        ...(matchingProject && { projectId: matchingProject.id }),
+                        ...(projectId && { projectId }),
                     },
                 });
             } else {
@@ -1169,7 +1147,7 @@ export class WhatsappService {
                     where: { id: dbContact.id },
                     data: { 
                         customName: name,
-                        ...(matchingProject && { projectId: matchingProject.id }),
+                        ...(projectId && { projectId }),
                     },
                 });
             }
@@ -1218,7 +1196,7 @@ export class WhatsappService {
         name: string,
         platformName: string,
         passwordResetUrl: string,
-        requestHost: string
+        projectId?: number
     ): Promise<any> {
         try {
             const components = [
@@ -1265,28 +1243,6 @@ Se você não solicitou redefinição de senha, desconsidere essa mensagem.`;
             // Check for existing contact with Brazilian number variations (with/without 9)
             let dbContact = await this.findContactWithBrVariations(to);
 
-            // Find project that matches the request host
-            let matchingProject = null;
-            try {
-                // Remove port from host if present (e.g., "example.com:3000" -> "example.com")
-                const hostname = requestHost.split(':')[0];
-                
-                // Find project where apiUrl contains the request hostname
-                const projects = await this.prisma.project.findMany({
-                    where: {
-                        apiUrl: {
-                            contains: hostname,
-                        },
-                    },
-                });
-
-                if (projects.length > 0) {
-                    matchingProject = projects[0];
-                }
-            } catch (error) {
-                console.log('Error matching project by request host:', error.message);
-            }
-
             // If no existing contact found, create a new one with custom name and project
             if (!dbContact) {
                 dbContact = await this.prisma.contact.create({
@@ -1294,7 +1250,7 @@ Se você não solicitou redefinição de senha, desconsidere essa mensagem.`;
                         waId: to,
                         name: name,
                         customName: name,
-                        projectId: matchingProject?.id || null,
+                        projectId: projectId || null,
                     },
                 });
             } else {
@@ -1303,7 +1259,7 @@ Se você não solicitou redefinição de senha, desconsidere essa mensagem.`;
                     where: { id: dbContact.id },
                     data: {
                         customName: name,
-                        projectId: dbContact.projectId || matchingProject?.id || null,
+                        projectId: dbContact.projectId || projectId || null,
                     },
                 });
             }

@@ -1,8 +1,7 @@
 import { Controller, Get, Post, Patch, Param, Body, Query, HttpStatus, Req, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags, ApiParam, ApiQuery, ApiSecurity, ApiBearerAuth } from '@nestjs/swagger';
 import { WhatsappService } from '../service';
-import { FastifyRequest } from 'fastify';
-import { ApiKeyOrJwtGuard } from '../../common/security';
+import { ApiKeyOrJwtGuard, ApiKeyOrJwtRequest } from '../../common/security';
 
 @Controller('conversations')
 @ApiTags('conversations')
@@ -63,7 +62,7 @@ export class ConversationController {
     @ApiQuery({ name: 'password', description: 'Password credential', required: true })
     @ApiResponse({ status: HttpStatus.OK, description: 'Invite sent successfully' })
     public async inviteToChurch(
-        @Req() request: FastifyRequest,
+        @Req() request: ApiKeyOrJwtRequest,
         @Query('to') to: string,
         @Query('name') name: string,
         @Query('platform') platform: string,
@@ -71,14 +70,12 @@ export class ConversationController {
         @Query('login') login: string,
         @Query('password') password: string
     ): Promise<any> {
-        const requestHost = request.headers.host || '';
+        const projectId = request.project?.id;
 
         // print full request in json format for debugging
-        console.log('Invite to church request:', JSON.stringify({
-            request
-        }, null, 2));
+        console.log('projectId:', projectId);
 
-        return this.whatsappService.inviteToChurch(to, name, platform, platformUrl, login, password, requestHost);
+        return this.whatsappService.inviteToChurch(to, name, platform, platformUrl, login, password, projectId);
     }
 
     @Post('passwordReset')
@@ -92,14 +89,14 @@ export class ConversationController {
     @ApiQuery({ name: 'password_reset_url', description: 'Password reset URL', required: true })
     @ApiResponse({ status: HttpStatus.OK, description: 'Password reset message sent successfully' })
     public async passwordReset(
-        @Req() request: FastifyRequest,
+        @Req() request: ApiKeyOrJwtRequest,
         @Query('to') to: string,
         @Query('name') name: string,
         @Query('platform_name') platformName: string,
         @Query('password_reset_url') passwordResetUrl: string
     ): Promise<any> {
-        const requestHost = request.headers.host || '';
-        return this.whatsappService.passwordReset(to, name, platformName, passwordResetUrl, requestHost);
+        const projectId = request.project?.id;
+        return this.whatsappService.passwordReset(to, name, platformName, passwordResetUrl, projectId);
     }
 
     @Patch(':id/custom-name')
