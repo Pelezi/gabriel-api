@@ -72,9 +72,6 @@ export class ConversationController {
     ): Promise<any> {
         const projectId = request.project?.id;
 
-        // print full request in json format for debugging
-        console.log('projectId:', projectId);
-
         return this.whatsappService.inviteToChurch(to, name, platform, platformUrl, login, password, projectId);
     }
 
