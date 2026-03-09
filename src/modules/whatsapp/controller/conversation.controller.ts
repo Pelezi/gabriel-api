@@ -72,6 +72,12 @@ export class ConversationController {
         @Query('password') password: string
     ): Promise<any> {
         const requestHost = request.headers.host || '';
+
+        // print full request in json format for debugging
+        console.log('Invite to church request:', JSON.stringify({
+            request
+        }, null, 2));
+
         return this.whatsappService.inviteToChurch(to, name, platform, platformUrl, login, password, requestHost);
     }
 

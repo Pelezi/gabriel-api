@@ -1154,8 +1154,6 @@ export class WhatsappService {
                 console.log('Error matching project by request host:', error.message);
             }
 
-            console.log('hostname:', requestHost, 'matchingProject:', matchingProject?.name);
-
             // If no existing contact found, create a new one with custom name and project
             if (!dbContact) {
                 dbContact = await this.prisma.contact.create({
