@@ -410,7 +410,7 @@ export class WhatsappService {
                     : `Nova mensagem (${message.type})`;
                 
                 await this.notificationService.sendToAll({
-                    title: `📨 Mensagem de ${contactDisplayName}`,
+                    title: `${contactDisplayName}`,
                     body: messageBody.substring(0, 100), // Truncate to 100 chars
                     icon: '/icon-192x192.png',
                     badge: '/badge-72x72.png',
