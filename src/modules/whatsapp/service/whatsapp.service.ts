@@ -8,6 +8,7 @@ import { MessagePersistenceService } from './message-persistence.service';
 import { OutboundMessengerService } from './outbound-messenger.service';
 import { ProjectContextService } from './project-context.service';
 import { ConversationSessionService } from './conversation-session.service';
+import { ActionRouterService } from '../actions';
 
 @Injectable()
 export class WhatsappService {
@@ -20,7 +21,8 @@ export class WhatsappService {
         private readonly messagePersistence: MessagePersistenceService,
         private readonly outboundMessenger: OutboundMessengerService,
         private readonly projectContextService: ProjectContextService,
-        private readonly sessionService: ConversationSessionService
+        private readonly sessionService: ConversationSessionService,
+        private readonly actionRouterService: ActionRouterService
     ) {}
 
     /**
@@ -233,59 +235,17 @@ export class WhatsappService {
             const messageText = message.type === 'text' ? message.text.body.trim() : '';
             let session = await this.sessionService.getOrCreateSession(dbContact.id, dbContact.projectId ?? null);
 
-            // Check if user sent "0" or "trocar projeto" to reset project selection
-            if (messageText === '0' || messageText.toLowerCase() === 'trocar projeto') {
-                await this.sessionService.clearActiveProject(dbContact.id);
-                
-                const projectIds = await this.projectContextService.checkContactInProjectsWithCache(contact.wa_id);
-                await this.projectContextService.handleProjectSelection(dbContact, projectIds, conversation.id);
+            const actionResult = await this.actionRouterService.route({
+                dbContact,
+                contactPayload: contact,
+                conversation,
+                message,
+                messageText,
+                session,
+            });
+
+            if (actionResult.handled && actionResult.stopProcessing) {
                 return;
-            }
-
-            // If contact is pending project selection, handle their choice
-            if (this.sessionService.isAwaitingProjectSelection(session) && messageText) {
-                // Handle cancellation
-                if (messageText.toLowerCase() === 'cancelar') {
-                    await this.sessionService.cancelProjectSelection(dbContact.id);
-                    
-                    const cancelMsg = '❌ Seleção cancelada. Envie uma mensagem quando precisar.';
-                    const sentMsg = await this.outboundMessenger.sendTextMessage(contact.wa_id, cancelMsg);
-                    await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, cancelMsg, sentMsg?.messages?.[0]?.id);
-                    return;
-                }
-
-                const availableIds = this.sessionService.getAvailableProjectIds(session);
-                const selectedProjectId = parseInt(messageText);
-
-                if (availableIds.includes(selectedProjectId)) {
-                    // Valid selection - set the project
-                    await this.sessionService.setActiveProject(dbContact.id, selectedProjectId);
-
-                    const selectedProject = await this.prisma.project.findUnique({
-                        where: { id: selectedProjectId },
-                    });
-
-                    const confirmationText = `✅ Perfeito! Agora vamos falar sobre o projeto: *${selectedProject?.name}*. Como posso ajudá-lo?`;
-                    const sentMessage = await this.outboundMessenger.sendTextMessage(
-                        contact.wa_id,
-                        confirmationText
-                    );
-
-                    // Save the outbound message
-                    await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, confirmationText, sentMessage?.messages?.[0]?.id);
-                    return;
-                } else {
-                    // Invalid selection - ask again
-                    const errorText = `⚠️ Opção inválida. Por favor, escolha um dos números listados ou digite *cancelar*.`;
-                    const sentMessage = await this.outboundMessenger.sendTextMessage(
-                        contact.wa_id,
-                        errorText
-                    );
-
-                    // Save the outbound message
-                    await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, errorText, sentMessage?.messages?.[0]?.id);
-                    return;
-                }
             }
 
             // If contact doesn't have a project assigned, check projects
