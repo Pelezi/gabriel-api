@@ -7,6 +7,7 @@ import { AwsService } from '../../common/provider/aws.provider';
 import { MessagePersistenceService } from './message-persistence.service';
 import { OutboundMessengerService } from './outbound-messenger.service';
 import { ProjectContextService } from './project-context.service';
+import { ConversationSessionService } from './conversation-session.service';
 
 @Injectable()
 export class WhatsappService {
@@ -18,7 +19,8 @@ export class WhatsappService {
         private readonly awsService: AwsService,
         private readonly messagePersistence: MessagePersistenceService,
         private readonly outboundMessenger: OutboundMessengerService,
-        private readonly projectContextService: ProjectContextService
+        private readonly projectContextService: ProjectContextService,
+        private readonly sessionService: ConversationSessionService
     ) {}
 
     /**
@@ -229,13 +231,11 @@ export class WhatsappService {
     private async processMessageLogic(dbContact: any, contact: any, message: any, conversation: any): Promise<void> {
         try {
             const messageText = message.type === 'text' ? message.text.body.trim() : '';
+            let session = await this.sessionService.getOrCreateSession(dbContact.id, dbContact.projectId ?? null);
 
             // Check if user sent "0" or "trocar projeto" to reset project selection
             if (messageText === '0' || messageText.toLowerCase() === 'trocar projeto') {
-                await this.prisma.contact.update({
-                    where: { id: dbContact.id },
-                    data: { projectId: null, pendingProjectSelection: false }
-                });
+                await this.sessionService.clearActiveProject(dbContact.id);
                 
                 const projectIds = await this.projectContextService.checkContactInProjectsWithCache(contact.wa_id);
                 await this.projectContextService.handleProjectSelection(dbContact, projectIds, conversation.id);
@@ -243,16 +243,10 @@ export class WhatsappService {
             }
 
             // If contact is pending project selection, handle their choice
-            if (dbContact.pendingProjectSelection && messageText) {
+            if (this.sessionService.isAwaitingProjectSelection(session) && messageText) {
                 // Handle cancellation
                 if (messageText.toLowerCase() === 'cancelar') {
-                    await this.prisma.contact.update({
-                        where: { id: dbContact.id },
-                        data: {
-                            pendingProjectSelection: false,
-                            availableProjectIds: null,
-                        },
-                    });
+                    await this.sessionService.cancelProjectSelection(dbContact.id);
                     
                     const cancelMsg = '❌ Seleção cancelada. Envie uma mensagem quando precisar.';
                     const sentMsg = await this.outboundMessenger.sendTextMessage(contact.wa_id, cancelMsg);
@@ -260,19 +254,12 @@ export class WhatsappService {
                     return;
                 }
 
-                const availableIds = dbContact.availableProjectIds?.split(',').map(Number) || [];
+                const availableIds = this.sessionService.getAvailableProjectIds(session);
                 const selectedProjectId = parseInt(messageText);
 
                 if (availableIds.includes(selectedProjectId)) {
                     // Valid selection - set the project
-                    await this.prisma.contact.update({
-                        where: { id: dbContact.id },
-                        data: {
-                            projectId: selectedProjectId,
-                            pendingProjectSelection: false,
-                            availableProjectIds: null,
-                        },
-                    });
+                    await this.sessionService.setActiveProject(dbContact.id, selectedProjectId);
 
                     const selectedProject = await this.prisma.project.findUnique({
                         where: { id: selectedProjectId },
@@ -302,16 +289,13 @@ export class WhatsappService {
             }
 
             // If contact doesn't have a project assigned, check projects
-            if (!dbContact.projectId) {
+            if (!session.activeProjectId) {
                 const projectIds = await this.projectContextService.checkContactInProjectsWithCache(contact.wa_id);
                 await this.projectContextService.handleProjectSelection(dbContact, projectIds, conversation.id);
+                session = await this.sessionService.getOrCreateSession(dbContact.id, null);
 
                 // If still no project after selection (not in any project), notify
-                const updatedContact = await this.prisma.contact.findUnique({
-                    where: { id: dbContact.id },
-                });
-
-                if (!updatedContact?.projectId && !updatedContact?.pendingProjectSelection) {
+                if (!session.activeProjectId && !this.sessionService.isAwaitingProjectSelection(session)) {
                     const notRegisteredText = `❌ Desculpe, você não está cadastrado em nenhum projeto no momento.`;
                     const sentMessage = await this.outboundMessenger.sendTextMessage(
                         contact.wa_id,
@@ -324,12 +308,9 @@ export class WhatsappService {
                 }
 
                 // If now pending selection, the message was sent
-                if (updatedContact?.pendingProjectSelection) {
+                if (this.sessionService.isAwaitingProjectSelection(session)) {
                     return;
                 }
-
-                // Update dbContact reference with the newly assigned project
-                dbContact = updatedContact;
             }
 
             this.logger.info(`Processed ${message.type} message from ${contact.profile?.name || contact.wa_id}`);

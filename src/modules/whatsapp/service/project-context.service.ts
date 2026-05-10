@@ -4,6 +4,7 @@ import axios from 'axios';
 import { PrismaService } from '../../common';
 import { MessagePersistenceService } from './message-persistence.service';
 import { OutboundMessengerService } from './outbound-messenger.service';
+import { ConversationSessionService } from './conversation-session.service';
 
 @Injectable()
 export class ProjectContextService {
@@ -14,7 +15,8 @@ export class ProjectContextService {
     public constructor(
         private readonly prisma: PrismaService,
         private readonly outboundMessenger: OutboundMessengerService,
-        private readonly messagePersistence: MessagePersistenceService
+        private readonly messagePersistence: MessagePersistenceService,
+        private readonly sessionService: ConversationSessionService
     ) {}
 
     public async checkContactInProjectsWithCache(phoneNumber: string): Promise<number[]> {
@@ -51,27 +53,15 @@ export class ProjectContextService {
 
     public async handleProjectSelection(contact: any, projectIds: number[], conversationId?: string): Promise<void> {
         try {
+            await this.sessionService.getOrCreateSession(contact.id, contact.projectId ?? null);
+
             if (projectIds.length === 0) {
-                await this.prisma.contact.update({
-                    where: { id: contact.id },
-                    data: {
-                        projectId: null,
-                        pendingProjectSelection: false,
-                        availableProjectIds: null,
-                    },
-                });
+                await this.sessionService.clearActiveProject(contact.id);
                 return;
             }
 
             if (projectIds.length === 1) {
-                await this.prisma.contact.update({
-                    where: { id: contact.id },
-                    data: {
-                        projectId: projectIds[0],
-                        pendingProjectSelection: false,
-                        availableProjectIds: null,
-                    },
-                });
+                await this.sessionService.setActiveProject(contact.id, projectIds[0]);
 
                 const detectedProject = await this.prisma.project.findUnique({
                     where: { id: projectIds[0] },
@@ -125,14 +115,7 @@ export class ProjectContextService {
                 sentMessage?.messages?.[0]?.id
             );
 
-            await this.prisma.contact.update({
-                where: { id: contact.id },
-                data: {
-                    pendingProjectSelection: true,
-                    availableProjectIds: projectIds.join(','),
-                    projectId: null,
-                },
-            });
+            await this.sessionService.setAwaitingProjectSelection(contact.id, projectIds);
         } catch (error) {
             console.log(`Error handling project selection: ${error}`);
         }

@@ -4,6 +4,7 @@ import { CommonModule } from '../common';
 import { NotificationModule } from '../notification';
 import { WhatsappController, ConversationController } from './controller';
 import {
+    ConversationSessionService,
     MessagePersistenceService,
     OutboundMessengerService,
     ProjectContextService,
@@ -19,7 +20,8 @@ import {
         WhatsappService,
         OutboundMessengerService,
         MessagePersistenceService,
-        ProjectContextService
+        ProjectContextService,
+        ConversationSessionService
     ],
     controllers: [
         WhatsappController,
