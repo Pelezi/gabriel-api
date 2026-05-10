@@ -76,55 +76,6 @@ export class WhatsAppApiHelper {
   /**
    * Send media message via WhatsApp
    */
-  async sendInteractiveButtonMessage(
-    to: string,
-    bodyText: string,
-    buttons: Array<{ id: string; title: string }>,
-    replyToMessageId?: string
-  ): Promise<any> {
-    const url = `${WHATSAPP_API_URL}/${this.phoneNumberId}/messages`;
-
-    const payload: any = {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'button',
-        body: {
-          text: bodyText,
-        },
-        action: {
-          buttons: buttons.slice(0, 3).map((button) => ({
-            type: 'reply',
-            reply: {
-              id: button.id,
-              title: button.title,
-            },
-          })),
-        },
-      },
-    };
-
-    if (replyToMessageId) {
-      payload.context = {
-        message_id: replyToMessageId,
-      };
-    }
-
-    const response = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${this.accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    return response.data;
-  }
-
-  /**
-   * Send media message via WhatsApp
-   */
   async sendMediaMessage(
     to: string,
     type: 'image' | 'video' | 'audio' | 'document',

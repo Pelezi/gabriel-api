@@ -187,15 +187,16 @@ export class WhatsappService {
                 where: { id: { in: projectIds } },
             });
 
-            const interactiveBody = '📋 Múltiplos projetos encontrados. Selecione o projeto desejado:';
-            const buttons = projects.slice(0, 3).map((project) => ({
-                id: `project-select-${project.id}`,
-                // WhatsApp interactive button titles are limited to 20 chars.
-                title: project.name.length > 20 ? `${project.name.substring(0, 17)}...` : project.name,
-            }));
+            let message = '📋 *Múltiplos Projetos Encontrados*\n\n';
+            message += 'Você está cadastrado nos seguintes projetos:\n\n';
+            projects.forEach((project) => {
+                message += `*${project.id}* - ${project.name}\n`;
+            });
+                message += '\n💬 *Responda com o número* do projeto desejado.';
+            message += '\n❌ Digite *cancelar* para sair.';
 
-            // Send the selection message using interactive buttons
-            const sentMessage = await this.whatsappApi.sendInteractiveButtonMessage(contact.waId, interactiveBody, buttons);
+            // Send the selection message
+            const sentMessage = await this.whatsappApi.sendTextMessage(contact.waId, message);
 
             // Get or create conversation for saving the outbound message
             let conversation;
@@ -217,15 +218,7 @@ export class WhatsappService {
             }
 
             // Save the outbound message
-            const messageLogText = [
-                interactiveBody,
-                ...projects.slice(0, 3).map((project, index) => `${index + 1}. ${project.name}`),
-                projects.length > 3 ? '... (somente os 3 primeiros exibidos como botões)' : '',
-                'Digite *cancelar* para sair.',
-            ]
-                .filter(Boolean)
-                .join('\n');
-            await this.saveOutboundMessage(conversation.id, contact.id, messageLogText, sentMessage?.messages?.[0]?.id);
+            await this.saveOutboundMessage(conversation.id, contact.id, message, sentMessage?.messages?.[0]?.id);
 
             // Update contact to pending selection state
             await this.prisma.contact.update({
@@ -449,13 +442,6 @@ export class WhatsappService {
     private async processMessageLogic(dbContact: any, contact: any, message: any, conversation: any): Promise<void> {
         try {
             const messageText = message.type === 'text' ? message.text.body.trim() : '';
-            const buttonReplyId = message.type === 'interactive' ? message.interactive?.button_reply?.id : null;
-            const buttonReplyTitle = message.type === 'interactive' ? message.interactive?.button_reply?.title : '';
-            const selectedProjectFromButton = buttonReplyId?.startsWith('project-select-')
-                ? Number(buttonReplyId.replace('project-select-', ''))
-                : null;
-            const hasButtonSelection = Number.isInteger(selectedProjectFromButton);
-            const isCancelSelection = buttonReplyId === 'project-select-cancel' || buttonReplyTitle?.toLowerCase() === 'cancelar';
 
             // Check if user sent "0" or "trocar projeto" to reset project selection
             if (messageText === '0' || messageText.toLowerCase() === 'trocar projeto') {
@@ -470,9 +456,9 @@ export class WhatsappService {
             }
 
             // If contact is pending project selection, handle their choice
-            if (dbContact.pendingProjectSelection && (messageText || hasButtonSelection || isCancelSelection)) {
+            if (dbContact.pendingProjectSelection && messageText) {
                 // Handle cancellation
-                if (messageText.toLowerCase() === 'cancelar' || isCancelSelection) {
+                if (messageText.toLowerCase() === 'cancelar') {
                     await this.prisma.contact.update({
                         where: { id: dbContact.id },
                         data: {
@@ -488,9 +474,7 @@ export class WhatsappService {
                 }
 
                 const availableIds = dbContact.availableProjectIds?.split(',').map(Number) || [];
-                const selectedProjectId = hasButtonSelection
-                    ? Number(selectedProjectFromButton)
-                    : parseInt(messageText, 10);
+                const selectedProjectId = parseInt(messageText);
 
                 if (availableIds.includes(selectedProjectId)) {
                     // Valid selection - set the project
@@ -682,18 +666,6 @@ export class WhatsappService {
             case 'reaction':
                 messageData.reactionEmoji = message.reaction.emoji;
                 messageData.replyToId = message.reaction.message_id;
-                break;
-
-            case 'interactive':
-                if (message.interactive?.button_reply) {
-                    const buttonId = message.interactive.button_reply.id;
-                    const buttonTitle = message.interactive.button_reply.title;
-                    messageData.textBody = `[button] ${buttonTitle} (${buttonId})`;
-                } else if (message.interactive?.list_reply) {
-                    const listId = message.interactive.list_reply.id;
-                    const listTitle = message.interactive.list_reply.title;
-                    messageData.textBody = `[list] ${listTitle} (${listId})`;
-                }
                 break;
 
             case 'unsupported':
@@ -912,7 +884,6 @@ export class WhatsappService {
     private mapMessageType(type: string): $Enums.MessageType {
         const typeMap: Record<string, $Enums.MessageType> = {
             text: $Enums.MessageType.TEXT,
-            interactive: $Enums.MessageType.TEXT,
             image: $Enums.MessageType.IMAGE,
             video: $Enums.MessageType.VIDEO,
             audio: $Enums.MessageType.AUDIO,
