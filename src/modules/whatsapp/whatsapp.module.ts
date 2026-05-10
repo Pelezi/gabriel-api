@@ -3,6 +3,12 @@ import { Module } from '@nestjs/common';
 import { CommonModule } from '../common';
 import { NotificationModule } from '../notification';
 import {
+    DefaultProjectAdapter,
+    ProjectAdapterRegistryService,
+    TalentosProjectAdapter,
+    UvasProjectAdapter
+} from './integrations';
+import {
     ActionRouterService,
     HelpAction,
     MenuAction,
@@ -33,7 +39,11 @@ import {
         PendingProjectSelectionAction,
         SwitchProjectAction,
         MenuAction,
-        HelpAction
+        HelpAction,
+        ProjectAdapterRegistryService,
+        DefaultProjectAdapter,
+        UvasProjectAdapter,
+        TalentosProjectAdapter
     ],
     controllers: [
         WhatsappController,

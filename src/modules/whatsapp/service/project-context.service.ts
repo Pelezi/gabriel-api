@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import axios from 'axios';
 
+import { ProjectAdapterRegistryService } from '../integrations';
 import { PrismaService } from '../../common';
 import { MessagePersistenceService } from './message-persistence.service';
 import { OutboundMessengerService } from './outbound-messenger.service';
@@ -16,7 +16,8 @@ export class ProjectContextService {
         private readonly prisma: PrismaService,
         private readonly outboundMessenger: OutboundMessengerService,
         private readonly messagePersistence: MessagePersistenceService,
-        private readonly sessionService: ConversationSessionService
+        private readonly sessionService: ConversationSessionService,
+        private readonly projectAdapterRegistry: ProjectAdapterRegistryService
     ) {}
 
     public async checkContactInProjectsWithCache(phoneNumber: string): Promise<number[]> {
@@ -137,24 +138,7 @@ export class ProjectContextService {
             const results = await Promise.allSettled(
                 projects.map(async (project) => {
                     try {
-                        const headers: any = {};
-                        if (project.apiKey) {
-                            headers['X-API-KEY'] = project.apiKey;
-                        }
-
-                        const baseUrl = project.apiUrl!.replace(/\/$/, '');
-                        const route = project.userNumbersApiUrl!.startsWith('/')
-                            ? project.userNumbersApiUrl
-                            : `/${project.userNumbersApiUrl}`;
-                        const fullUrl = `${baseUrl}${route}`;
-
-                        const response = await axios.get(fullUrl, {
-                            params: { phone: phoneNumber },
-                            timeout: 5000,
-                            headers,
-                        });
-
-                        const exists = response.data === true || response.data?.exists === true;
+                        const exists = await this.projectAdapterRegistry.verifyMembership(project, phoneNumber);
                         return { projectId: project.id, exists };
                     } catch (error: any) {
                         console.log(`Error checking project ${project.name}: ${error.message}`);
