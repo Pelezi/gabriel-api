@@ -3,7 +3,12 @@ import { Module } from '@nestjs/common';
 import { CommonModule } from '../common';
 import { NotificationModule } from '../notification';
 import { WhatsappController, ConversationController } from './controller';
-import { WhatsappService } from './service';
+import {
+    MessagePersistenceService,
+    OutboundMessengerService,
+    ProjectContextService,
+    WhatsappService
+} from './service';
 
 @Module({
     imports: [
@@ -11,7 +16,10 @@ import { WhatsappService } from './service';
         NotificationModule
     ],
     providers: [
-        WhatsappService
+        WhatsappService,
+        OutboundMessengerService,
+        MessagePersistenceService,
+        ProjectContextService
     ],
     controllers: [
         WhatsappController,

@@ -1,238 +1,25 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { LoggerService } from '../../common/provider';
 import { PrismaService } from '../../common';
-import { WhatsAppApiHelper } from '../helpers';
 import { $Enums } from '../../../generated/prisma/client';
 import { NotificationService } from '../../notification';
 import { AwsService } from '../../common/provider/aws.provider';
-import { v4 as uuidv4 } from 'uuid';
-import axios from 'axios';
+import { MessagePersistenceService } from './message-persistence.service';
+import { OutboundMessengerService } from './outbound-messenger.service';
+import { ProjectContextService } from './project-context.service';
 
 @Injectable()
 export class WhatsappService {
-
-    private whatsappApi: WhatsAppApiHelper;
-    private projectCheckLocks = new Map<string, Promise<number[]>>();
-    private projectCheckCache = new Map<string, { projectIds: number[], timestamp: number }>();
 
     public constructor(
         private readonly logger: LoggerService,
         private readonly prisma: PrismaService,
         private readonly notificationService: NotificationService,
-        private readonly awsService: AwsService
-    ) {
-        this.whatsappApi = new WhatsAppApiHelper();
-    }
-
-    /**
-     * Check which projects contain this phone number (with caching and locks)
-     * 
-     * @param phoneNumber WhatsApp phone number
-     * @returns Array of project IDs where the number exists
-     */
-    private async checkContactInProjectsWithCache(phoneNumber: string): Promise<number[]> {
-        // Check cache first
-        const cached = this.projectCheckCache.get(phoneNumber);
-        const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-        if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-            console.log(`Using cached project check for ${phoneNumber}`);
-            return cached.projectIds;
-        }
-
-        // Check if already checking (prevent race conditions)
-        const existingCheck = this.projectCheckLocks.get(phoneNumber);
-        if (existingCheck) {
-            console.log(`Waiting for existing project check for ${phoneNumber}`);
-            return existingCheck;
-        }
-
-        // Create new check promise
-        const checkPromise = this.checkContactInProjects(phoneNumber);
-        this.projectCheckLocks.set(phoneNumber, checkPromise);
-
-        try {
-            const projectIds = await checkPromise;
-            
-            // Cache the result
-            this.projectCheckCache.set(phoneNumber, {
-                projectIds,
-                timestamp: Date.now()
-            });
-
-            return projectIds;
-        } finally {
-            // Cleanup lock after 5 seconds
-            setTimeout(() => this.projectCheckLocks.delete(phoneNumber), 5000);
-        }
-    }
-
-    /**
-     * Check which projects contain this phone number (parallel API calls)
-     * 
-     * @param phoneNumber WhatsApp phone number
-     * @returns Array of project IDs where the number exists
-     */
-    private async checkContactInProjects(phoneNumber: string): Promise<number[]> {
-        try {
-            // Filter projects with required configuration
-            const projects = await this.prisma.project.findMany({
-                where: {
-                    AND: [
-                        { apiUrl: { not: null } },
-                        { userNumbersApiUrl: { not: null } }
-                    ]
-                }
-            });
-
-            console.log(`Checking ${projects.length} projects for phone ${phoneNumber}`);
-
-            // Parallel API calls for better performance
-            const results = await Promise.allSettled(
-                projects.map(async (project) => {
-                    try {
-                        const headers: any = {};
-                        if (project.apiKey) {
-                            headers['X-API-KEY'] = project.apiKey;
-                        }
-
-                        const baseUrl = project.apiUrl!.replace(/\/$/, '');
-                        const route = project.userNumbersApiUrl!.startsWith('/') 
-                            ? project.userNumbersApiUrl 
-                            : `/${project.userNumbersApiUrl}`;
-                        const fullUrl = `${baseUrl}${route}`;
-
-                        const response = await axios.get(fullUrl, {
-                            params: { phone: phoneNumber },
-                            timeout: 5000, // Reduced from 63s to 5s
-                            headers,
-                        });
-
-                        const exists = response.data === true || response.data?.exists === true;
-                        return { projectId: project.id, projectName: project.name, exists };
-                    } catch (error: any) {
-                        console.log(`Error checking project ${project.name}: ${error.message}`);
-                        return { projectId: project.id, projectName: project.name, exists: false };
-                    }
-                })
-            );
-
-            // Extract successful results
-            const projectIds = results
-                .filter(r => r.status === 'fulfilled' && r.value.exists)
-                .map(r => (r as PromiseFulfilledResult<any>).value.projectId);
-
-            const failures = results.filter(r => r.status === 'rejected');
-            if (failures.length > 0) {
-                console.log(`⚠️ ${failures.length}/${projects.length} project checks failed`);
-            }
-
-            console.log(`Found ${projectIds.length} matching projects for ${phoneNumber}`);
-            return projectIds;
-        } catch (error) {
-            console.log(`Error checking contact in projects: ${error}`);
-            return [];
-        }
-    }
-
-    /**
-     * Handle project selection by contact
-     * 
-     * @param contact Contact object
-     * @param projectIds Available project IDs
-     * @param conversationId Optional conversation ID for sending messages
-     */
-    private async handleProjectSelection(contact: any, projectIds: number[], conversationId?: string): Promise<void> {
-        try {
-            if (projectIds.length === 0) {
-                // Contact not in any project - clear project association
-                await this.prisma.contact.update({
-                    where: { id: contact.id },
-                    data: {
-                        projectId: null,
-                        pendingProjectSelection: false,
-                        availableProjectIds: null,
-                    },
-                });
-                return;
-            }
-
-            if (projectIds.length === 1) {
-                // Automatically select the only project
-                await this.prisma.contact.update({
-                    where: { id: contact.id },
-                    data: {
-                        projectId: projectIds[0],
-                        pendingProjectSelection: false,
-                        availableProjectIds: null,
-                    },
-                });
-
-                // Send message informing which project was detected
-                const detectedProject = await this.prisma.project.findUnique({
-                    where: { id: projectIds[0] },
-                });
-
-                if (detectedProject && conversationId) {
-                    const detectedText = `✅ Número encontrado! Você foi detectado no projeto: *${detectedProject.name}*`;
-                    const detectedMsg = await this.whatsappApi.sendTextMessage(contact.waId, detectedText);
-                    await this.saveOutboundMessage(conversationId, contact.id, detectedText, detectedMsg?.messages?.[0]?.id);
-                }
-
-                return;
-            }
-
-            // Multiple projects - ask user to choose
-            const projects = await this.prisma.project.findMany({
-                where: { id: { in: projectIds } },
-            });
-
-            let message = '📋 *Múltiplos Projetos Encontrados*\n\n';
-            message += 'Você está cadastrado nos seguintes projetos:\n\n';
-            projects.forEach((project) => {
-                message += `*${project.id}* - ${project.name}\n`;
-            });
-                message += '\n💬 *Responda com o número* do projeto desejado.';
-            message += '\n❌ Digite *cancelar* para sair.';
-
-            // Send the selection message
-            const sentMessage = await this.whatsappApi.sendTextMessage(contact.waId, message);
-
-            // Get or create conversation for saving the outbound message
-            let conversation;
-            if (conversationId) {
-                conversation = await this.prisma.conversation.findUnique({
-                    where: { id: conversationId },
-                });
-            }
-            
-            if (!conversation) {
-                conversation = await this.prisma.conversation.upsert({
-                    where: { contactId: contact.id },
-                    update: {},
-                    create: {
-                        contactId: contact.id,
-                        unreadCount: 0,
-                    },
-                });
-            }
-
-            // Save the outbound message
-            await this.saveOutboundMessage(conversation.id, contact.id, message, sentMessage?.messages?.[0]?.id);
-
-            // Update contact to pending selection state
-            await this.prisma.contact.update({
-                where: { id: contact.id },
-                data: {
-                    pendingProjectSelection: true,
-                    availableProjectIds: projectIds.join(','),
-                    projectId: null,
-                },
-            });
-        } catch (error) {
-            console.log(`Error handling project selection: ${error}`);
-        }
-    }
+        private readonly awsService: AwsService,
+        private readonly messagePersistence: MessagePersistenceService,
+        private readonly outboundMessenger: OutboundMessengerService,
+        private readonly projectContextService: ProjectContextService
+    ) {}
 
     /**
      * Find contact with Brazilian number variations (with/without the 9th digit)
@@ -390,17 +177,17 @@ export class WhatsappService {
             if (isFirstMessage) {
                 // First welcome message
                 const welcomeText = `Olá! Você está falando com o Bot de WhatsApp de Alessandro. 👋`;
-                const welcomeMsg = await this.whatsappApi.sendTextMessage(contact.wa_id, welcomeText);
-                await this.saveOutboundMessage(conversation.id, dbContact.id, welcomeText, welcomeMsg?.messages?.[0]?.id);
+                const welcomeMsg = await this.outboundMessenger.sendTextMessage(contact.wa_id, welcomeText);
+                await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, welcomeText, welcomeMsg?.messages?.[0]?.id);
 
                 // // Second message about checking registration
                 const checkingText = `Estamos conferindo se o seu número está cadastrado em algum projeto para direcioná-lo corretamente...`;
-                const checkingMsg = await this.whatsappApi.sendTextMessage(contact.wa_id, checkingText);
-                await this.saveOutboundMessage(conversation.id, dbContact.id, checkingText, checkingMsg?.messages?.[0]?.id);
+                const checkingMsg = await this.outboundMessenger.sendTextMessage(contact.wa_id, checkingText);
+                await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, checkingText, checkingMsg?.messages?.[0]?.id);
             }
 
             // Save the incoming message first (ensures webhook responds quickly)
-            await this.saveIncomingMessage(message, conversation.id, dbContact.id);
+            await this.messagePersistence.saveIncomingMessage(message, conversation.id, dbContact.id);
 
             // Send push notifications to all subscribed users
             try {
@@ -450,8 +237,8 @@ export class WhatsappService {
                     data: { projectId: null, pendingProjectSelection: false }
                 });
                 
-                const projectIds = await this.checkContactInProjectsWithCache(contact.wa_id);
-                await this.handleProjectSelection(dbContact, projectIds, conversation.id);
+                const projectIds = await this.projectContextService.checkContactInProjectsWithCache(contact.wa_id);
+                await this.projectContextService.handleProjectSelection(dbContact, projectIds, conversation.id);
                 return;
             }
 
@@ -468,8 +255,8 @@ export class WhatsappService {
                     });
                     
                     const cancelMsg = '❌ Seleção cancelada. Envie uma mensagem quando precisar.';
-                    const sentMsg = await this.whatsappApi.sendTextMessage(contact.wa_id, cancelMsg);
-                    await this.saveOutboundMessage(conversation.id, dbContact.id, cancelMsg, sentMsg?.messages?.[0]?.id);
+                    const sentMsg = await this.outboundMessenger.sendTextMessage(contact.wa_id, cancelMsg);
+                    await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, cancelMsg, sentMsg?.messages?.[0]?.id);
                     return;
                 }
 
@@ -492,32 +279,32 @@ export class WhatsappService {
                     });
 
                     const confirmationText = `✅ Perfeito! Agora vamos falar sobre o projeto: *${selectedProject?.name}*. Como posso ajudá-lo?`;
-                    const sentMessage = await this.whatsappApi.sendTextMessage(
+                    const sentMessage = await this.outboundMessenger.sendTextMessage(
                         contact.wa_id,
                         confirmationText
                     );
 
                     // Save the outbound message
-                    await this.saveOutboundMessage(conversation.id, dbContact.id, confirmationText, sentMessage?.messages?.[0]?.id);
+                    await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, confirmationText, sentMessage?.messages?.[0]?.id);
                     return;
                 } else {
                     // Invalid selection - ask again
                     const errorText = `⚠️ Opção inválida. Por favor, escolha um dos números listados ou digite *cancelar*.`;
-                    const sentMessage = await this.whatsappApi.sendTextMessage(
+                    const sentMessage = await this.outboundMessenger.sendTextMessage(
                         contact.wa_id,
                         errorText
                     );
 
                     // Save the outbound message
-                    await this.saveOutboundMessage(conversation.id, dbContact.id, errorText, sentMessage?.messages?.[0]?.id);
+                    await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, errorText, sentMessage?.messages?.[0]?.id);
                     return;
                 }
             }
 
             // If contact doesn't have a project assigned, check projects
             if (!dbContact.projectId) {
-                const projectIds = await this.checkContactInProjectsWithCache(contact.wa_id);
-                await this.handleProjectSelection(dbContact, projectIds, conversation.id);
+                const projectIds = await this.projectContextService.checkContactInProjectsWithCache(contact.wa_id);
+                await this.projectContextService.handleProjectSelection(dbContact, projectIds, conversation.id);
 
                 // If still no project after selection (not in any project), notify
                 const updatedContact = await this.prisma.contact.findUnique({
@@ -526,13 +313,13 @@ export class WhatsappService {
 
                 if (!updatedContact?.projectId && !updatedContact?.pendingProjectSelection) {
                     const notRegisteredText = `❌ Desculpe, você não está cadastrado em nenhum projeto no momento.`;
-                    const sentMessage = await this.whatsappApi.sendTextMessage(
+                    const sentMessage = await this.outboundMessenger.sendTextMessage(
                         contact.wa_id,
                         notRegisteredText
                     );
 
                     // Save the outbound message
-                    await this.saveOutboundMessage(conversation.id, dbContact.id, notRegisteredText, sentMessage?.messages?.[0]?.id);
+                    await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, notRegisteredText, sentMessage?.messages?.[0]?.id);
                     return;
                 }
 
@@ -549,150 +336,6 @@ export class WhatsappService {
         } catch (error) {
             console.log('Error in message processing logic:', error);
         }
-    }
-
-    /**
-     * Save incoming message to database
-     */
-    private async saveIncomingMessage(message: any, conversationId: string, contactId: string): Promise<void> {
-        // Process message based on type
-        const messageData: any = {
-            id: message.id,
-            conversationId: conversationId,
-            contactId: contactId,
-            type: this.mapMessageType(message.type),
-            direction: $Enums.Direction.INBOUND,
-            timestamp: BigInt(parseInt(message.timestamp) * 1000),
-            status: $Enums.MessageStatus.DELIVERED,
-        };
-
-        // Handle context (reply to another message)
-        if (message.context?.id) {
-            messageData.replyToId = message.context.id;
-        }
-
-        // Handle different message types
-        switch (message.type) {
-            case 'text':
-                messageData.textBody = message.text.body;
-                break;
-
-            case 'image':
-                messageData.caption = message.image.caption;
-                messageData.mediaId = message.image.id;
-                messageData.mediaMimeType = message.image.mime_type;
-                try {
-                    messageData.mediaLocalPath = await this.downloadAndSaveMedia(
-                        message.image.id,
-                        message.image.mime_type,
-                        'image'
-                    );
-                } catch (error: any) {
-                    console.log(`Failed to download/upload image media: ${error.message}`);
-                    messageData.textBody = `[Erro ao baixar imagem: ${error.message}] ${messageData.caption || ''}`;
-                }
-                break;
-
-            case 'video':
-                messageData.caption = message.video.caption;
-                messageData.mediaId = message.video.id;
-                messageData.mediaMimeType = message.video.mime_type;
-                try {
-                    messageData.mediaLocalPath = await this.downloadAndSaveMedia(
-                        message.video.id,
-                        message.video.mime_type,
-                        'video'
-                    );
-                } catch (error: any) {
-                    console.log(`Failed to download/upload video media: ${error.message}`);
-                    messageData.textBody = `[Erro ao baixar vídeo: ${error.message}] ${messageData.caption || ''}`;
-                }
-                break;
-
-            case 'audio':
-                messageData.mediaId = message.audio.id;
-                messageData.mediaMimeType = message.audio.mime_type;
-                messageData.isVoice = message.audio.voice;
-                try {
-                    messageData.mediaLocalPath = await this.downloadAndSaveMedia(
-                        message.audio.id,
-                        message.audio.mime_type,
-                        'audio'
-                    );
-                } catch (error: any) {
-                    console.log(`Failed to download/upload audio media: ${error.message}`);
-                    messageData.textBody = `[Erro ao baixar áudio: ${error.message}]`;
-                }
-                break;
-
-            case 'sticker':
-                messageData.mediaId = message.sticker.id;
-                messageData.mediaMimeType = message.sticker.mime_type;
-                messageData.isAnimated = message.sticker.animated;
-                try {
-                    messageData.mediaLocalPath = await this.downloadAndSaveMedia(
-                        message.sticker.id,
-                        message.sticker.mime_type,
-                        'sticker'
-                    );
-                } catch (error: any) {
-                    console.log(`Failed to download/upload sticker media: ${error.message}`);
-                    messageData.textBody = `[Erro ao baixar sticker: ${error.message}]`;
-                }
-                break;
-
-            case 'document':
-                messageData.mediaId = message.document.id;
-                messageData.mediaMimeType = message.document.mime_type;
-                messageData.mediaFilename = message.document.filename;
-                try {
-                    messageData.mediaLocalPath = await this.downloadAndSaveMedia(
-                        message.document.id,
-                        message.document.mime_type,
-                        'document',
-                        message.document.filename
-                    );
-                } catch (error: any) {
-                    console.log(`Failed to download/upload document media: ${error.message}`);
-                    messageData.textBody = `[Erro ao baixar documento "${message.document.filename || 'arquivo'}": ${error.message}]`;
-                }
-                break;
-
-            case 'location':
-                messageData.latitude = message.location.latitude;
-                messageData.longitude = message.location.longitude;
-                break;
-
-            case 'reaction':
-                messageData.reactionEmoji = message.reaction.emoji;
-                messageData.replyToId = message.reaction.message_id;
-                break;
-
-            case 'unsupported':
-                // Just save as unsupported
-                break;
-        }
-
-        // Save message to database
-        await this.prisma.message.create({ data: messageData });
-    }
-
-    /**
-     * Save outbound text message to database
-     */
-    private async saveOutboundMessage(conversationId: string, contactId: string, textBody: string, wamid?: string): Promise<void> {
-        const messageData: any = {
-            id: wamid || `temp_${Date.now()}_${Math.random().toString(36).substring(7)}`,
-            conversationId: conversationId,
-            contactId: contactId,
-            type: $Enums.MessageType.TEXT,
-            direction: $Enums.Direction.OUTBOUND,
-            timestamp: BigInt(Date.now()),
-            status: $Enums.MessageStatus.SENT,
-            textBody: textBody,
-        };
-
-        await this.prisma.message.create({ data: messageData });
     }
 
     /**
@@ -830,42 +473,6 @@ export class WhatsappService {
     }
 
     /**
-     * Download media from WhatsApp, upload to S3 and return S3 key (not full URL)
-     */
-    private async downloadAndSaveMedia(
-        mediaId: string,
-        mimeType: string,
-        mediaType: 'image' | 'video' | 'audio' | 'sticker' | 'document',
-        filename?: string
-    ): Promise<string> {
-        try {
-            const buffer = await this.whatsappApi.downloadMedia(mediaId);
-
-            // Map media type to folder name
-            const folderMap = {
-                'image': 'images',
-                'video': 'videos',
-                'audio': 'audio',
-                'sticker': 'stickers',
-                'document': 'documents'
-            };
-
-            const folder = folderMap[mediaType];
-            const extension = mimeType.split('/')[1]?.split(';')[0] || 'bin';
-            const s3Key = `whatsapp-media/${folder}/${filename || `${uuidv4()}.${extension}`}`;
-
-            // Upload to S3
-            await this.awsService.uploadFile(buffer, s3Key, mimeType);
-            
-            // Return only the S3 key (not the full CloudFront URL)
-            return s3Key;
-        } catch (error) {
-            console.log('Error downloading/uploading media:', error);
-            throw new HttpException('Error downloading media', HttpStatus.INTERNAL_SERVER_ERROR);
-        }
-    }
-
-    /**
      * Transform message media paths to full CloudFront URLs
      */
     private transformMessageMediaUrl(message: any): any {
@@ -876,24 +483,6 @@ export class WhatsappService {
             };
         }
         return message;
-    }
-
-    /**
-     * Map WhatsApp message type to database enum
-     */
-    private mapMessageType(type: string): $Enums.MessageType {
-        const typeMap: Record<string, $Enums.MessageType> = {
-            text: $Enums.MessageType.TEXT,
-            image: $Enums.MessageType.IMAGE,
-            video: $Enums.MessageType.VIDEO,
-            audio: $Enums.MessageType.AUDIO,
-            sticker: $Enums.MessageType.STICKER,
-            document: $Enums.MessageType.DOCUMENT,
-            location: $Enums.MessageType.LOCATION,
-            reaction: $Enums.MessageType.REACTION,
-            unsupported: $Enums.MessageType.UNSUPPORTED,
-        };
-        return typeMap[type] || $Enums.MessageType.UNSUPPORTED;
     }
 
     /**
@@ -925,7 +514,7 @@ export class WhatsappService {
             }
 
             // Send via WhatsApp API
-            const response = await this.whatsappApi.sendTextMessage(conversation.contact.waId, text, replyToId);
+            const response = await this.outboundMessenger.sendTextMessage(conversation.contact.waId, text, replyToId);
 
             const messageId = response.messages[0].id;
 
@@ -1117,7 +706,7 @@ export class WhatsappService {
                 },
             ];
 
-            const response = await this.whatsappApi.sendTemplateMessage(
+            const response = await this.outboundMessenger.sendTemplateMessage(
                 to,
                 'access_created',
                 'en',
@@ -1234,7 +823,7 @@ export class WhatsappService {
                 },
             ];
 
-            const response = await this.whatsappApi.sendTemplateMessage(
+            const response = await this.outboundMessenger.sendTemplateMessage(
                 to,
                 'password_reset_url',
                 'pt_BR',
