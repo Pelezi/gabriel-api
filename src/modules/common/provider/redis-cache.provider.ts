@@ -1,9 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { LoggerService } from '../../common/provider';
 
 @Injectable()
-export class RedisCache {
+export class RedisCache implements OnApplicationShutdown {
   private redis: Redis;
 
   public constructor(
@@ -112,6 +112,23 @@ export class RedisCache {
    * Close connection
    */
   async close(): Promise<void> {
-    await this.redis.quit();
+    if (!this.redis) {
+      return;
+    }
+
+    if (this.redis.status === 'end') {
+      return;
+    }
+
+    try {
+      await this.redis.quit();
+    } catch (error: any) {
+      this.logger.error(`Error closing Redis Cache connection: ${error.message}`);
+      this.redis.disconnect();
+    }
+  }
+
+  public async onApplicationShutdown(): Promise<void> {
+    await this.close();
   }
 }

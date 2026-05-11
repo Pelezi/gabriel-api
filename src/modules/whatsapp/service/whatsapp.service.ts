@@ -7,10 +7,15 @@ import { $Enums } from '../../../generated/prisma/client';
 import { NotificationService } from '../../notification';
 import { AwsService } from '../../common/provider/aws.provider';
 import { RedisCache } from '../../common/provider/redis-cache.provider';
+import {
+    UvasInviteToChurchAction,
+    UvasPasswordResetAction
+} from '../actions';
 import { MessagePersistenceService } from './message-persistence.service';
 import { OutboundMessengerService } from './outbound-messenger.service';
 import { ProjectContextService } from './project-context.service';
 import { ConversationSessionService } from './conversation-session.service';
+import { ContactResolverService } from './contact-resolver.service';
 import { ActionRouterService } from '../actions';
 
 @Injectable()
@@ -25,64 +30,14 @@ export class WhatsappService {
         private readonly redisCache: RedisCache,
 
         private readonly messagePersistence: MessagePersistenceService,
+        private readonly contactResolverService: ContactResolverService,
         private readonly outboundMessenger: OutboundMessengerService,
         private readonly projectContextService: ProjectContextService,
         private readonly sessionService: ConversationSessionService,
-        private readonly actionRouterService: ActionRouterService
+        private readonly actionRouterService: ActionRouterService,
+        private readonly uvasInviteToChurchAction: UvasInviteToChurchAction,
+        private readonly uvasPasswordResetAction: UvasPasswordResetAction
     ) {}
-
-    /**
-     * Find contact with Brazilian number variations (with/without the 9th digit)
-     * Brazilian mobile numbers: 55 (country) + 11 (area code) + 9XXXXXXXX or 8XXXXXXXX
-     * 
-     * @param waId WhatsApp ID to search for
-     * @returns Contact if found, null otherwise
-     */
-    private async findContactWithBrVariations(waId: string): Promise<any | null> {
-        // First, try to find the exact match
-        let contact = await this.prisma.contact.findUnique({
-            where: { waId },
-        });
-
-        if (contact) {
-            return contact;
-        }
-
-        // Check if it's a Brazilian number (starts with 55)
-        if (!waId.startsWith('55')) {
-            return null;
-        }
-
-        // Generate the alternative number
-        // Brazilian mobile numbers: 55 + area code (2 digits) + number (8 or 9 digits)
-        // Format: 55 11 9XXXXXXXX (with 9) or 55 11 8XXXXXXXX (without 9)
-        let alternativeNumber: string;
-
-        // Extract area code (2 digits after country code)
-        const areaCode = waId.substring(2, 4);
-        const restOfNumber = waId.substring(4);
-
-        // Check if the number has 9 digits and starts with 9
-        if (restOfNumber.length === 9 && restOfNumber.startsWith('9')) {
-            // Remove the 9 to get the old format
-            alternativeNumber = `55${areaCode}${restOfNumber.substring(1)}`;
-        }
-        // Check if the number has 8 digits (old format)
-        else if (restOfNumber.length === 8) {
-            // Add 9 to get the new format
-            alternativeNumber = `55${areaCode}9${restOfNumber}`;
-        } else {
-            // Not a standard Brazilian mobile number format
-            return null;
-        }
-
-        // Search for the alternative number
-        contact = await this.prisma.contact.findUnique({
-            where: { waId: alternativeNumber },
-        });
-
-        return contact;
-    }
 
     /**
      * Verify webhook token and mode
@@ -149,7 +104,7 @@ export class WhatsappService {
             );
 
             this.logger.info(`Webhook enqueued with idempotencyKey: ${idempotencyKey}`);
-        } catch (error) {
+        } catch (error: any) {
             this.logger.error(`Error enqueueing webhook: ${error.message}`, error.stack);
             throw error;
         }
@@ -191,7 +146,7 @@ export class WhatsappService {
 
             // Mark as processed in cache for 24 hours
             await this.redisCache.set(processedKey, true, 86400);
-        } catch (error) {
+        } catch (error: any) {
             this.logger.error(`Error processing webhook async: ${error.message}`, error.stack);
             throw error;
         }
@@ -205,26 +160,11 @@ export class WhatsappService {
             const message = value.messages[0];
             const contact = value.contacts[0];
 
-            // Check for existing contact with Brazilian number variations (with/without 9)
-            let dbContact = await this.findContactWithBrVariations(contact.wa_id);
-
-            // If no existing contact found, create a new one
-            if (!dbContact) {
-                dbContact = await this.prisma.contact.create({
-                    data: {
-                        waId: contact.wa_id,
-                        name: contact.profile?.name,
-                    },
-                });
-            } else {
-                // Update the name if it changed
-                if (contact.profile?.name && contact.profile.name !== dbContact.name) {
-                    dbContact = await this.prisma.contact.update({
-                        where: { id: dbContact.id },
-                        data: { name: contact.profile.name },
-                    });
-                }
-            }
+            const dbContact = await this.contactResolverService.upsertContactSafely(
+                contact.wa_id,
+                { name: contact.profile?.name || null },
+                { name: contact.profile?.name || undefined }
+            );
 
             // Get or create conversation (should always exist for message history)
             const conversation = await this.prisma.conversation.upsert({
@@ -283,11 +223,8 @@ export class WhatsappService {
                 console.log('Error sending push notification for incoming message:', error instanceof Error ? error.message : String(error));
             }
 
-            // Handle project selection logic in background (non-blocking)
-            setImmediate(() => {
-                this.processMessageLogic(dbContact, contact, message, conversation)
-                    .catch(err => console.log('Error in background message processing:', err));
-            });
+            // Keep processing inside the worker execution flow so retries can happen on failure.
+            await this.processMessageLogic(dbContact, contact, message, conversation);
 
         } catch (error) {
             console.log('Error handling incoming message:', error);
@@ -344,6 +281,7 @@ export class WhatsappService {
             this.logger.info(`Processed ${message.type} message from ${contact.profile?.name || contact.wa_id}`);
         } catch (error) {
             console.log('Error in message processing logic:', error);
+            throw error;
         }
     }
 
@@ -400,7 +338,8 @@ export class WhatsappService {
             console.log(`Updated message ${status.id} to status: ${status.status}`);
         } catch (error) {
             console.log('Error handling status update:', error);
-            // Don't throw error to prevent webhook failures
+            // In async worker mode, throw so BullMQ can retry and idempotency is not marked prematurely.
+            throw error;
         }
     }
 
@@ -413,15 +352,13 @@ export class WhatsappService {
             const phoneNumber = status.recipient_id;
             
             // Find or create contact (considering Brazilian phone number variations)
-            let contact = await this.findContactWithBrVariations(phoneNumber);
+            let contact = await this.contactResolverService.findByWaIdVariants(phoneNumber);
 
             if (!contact) {
-                contact = await this.prisma.contact.create({
-                    data: {
-                        waId: phoneNumber,
-                        name: phoneNumber
-                    }
-                });
+                contact = await this.contactResolverService.upsertContactSafely(
+                    phoneNumber,
+                    { name: phoneNumber }
+                );
                 console.log(`Created new contact for ${phoneNumber}`);
             } else {
                 console.log(`Found existing contact for ${phoneNumber} (matched waId: ${contact.waId})`);
@@ -676,121 +613,15 @@ export class WhatsappService {
         password: string,
         projectId?: number
     ): Promise<any> {
-        try {
-            const components = [
-                {
-                    type: 'header',
-                    parameters: [
-                        {
-                            type: 'text',
-                            parameter_name: 'name',
-                            text: name,
-                        },
-                    ],
-                },
-                {
-                    type: 'body',
-                    parameters: [
-                        {
-                            type: 'text',
-                            parameter_name: 'platform',
-                            text: platform,
-                        },
-                        {
-                            type: 'text',
-                            parameter_name: 'platform_url',
-                            text: platformUrl,
-                        },
-                        {
-                            type: 'text',
-                            parameter_name: 'login',
-                            text: login,
-                        },
-                        {
-                            type: 'text',
-                            parameter_name: 'password',
-                            text: password,
-                        },
-                    ],
-                },
-            ];
-
-            const response = await this.outboundMessenger.sendTemplateMessage(
-                to,
-                'access_created',
-                'en',
-                components
-            );
-
-            // Create the formatted message text
-            const messageText = `Bem vindo ${name}
-                Olá, seu acesso à plataforma ${platform} foi criado.
-                Você pode estar acessando através desse link:
-                ${platformUrl}
-                Com o seguinte acesso:
-                ${login}
-                Senha: ${password}
-
-                Por favor mude a sua senha após o primeiro acesso.
-                Plataforma feita por Alessandro Cardoso`;
-
-            // Check for existing contact with Brazilian number variations (with/without 9)
-            let dbContact = await this.findContactWithBrVariations(to);
-
-            // If no existing contact found, create a new one with custom name and project
-            if (!dbContact) {
-                dbContact = await this.prisma.contact.create({
-                    data: {
-                        waId: to,
-                        customName: name, // Set custom name from invite
-                        ...(projectId && { projectId }),
-                    },
-                });
-            } else {
-                // Update custom name and project if contact exists
-                dbContact = await this.prisma.contact.update({
-                    where: { id: dbContact.id },
-                    data: { 
-                        customName: name,
-                        ...(projectId && { projectId }),
-                    },
-                });
-            }
-
-            // Get or create conversation
-            const conversation = await this.prisma.conversation.upsert({
-                where: { contactId: dbContact.id },
-                update: {},
-                create: {
-                    contactId: dbContact.id,
-                    unreadCount: 0,
-                },
-            });
-
-            // Save message to database
-            const messageId = response.messages[0].id;
-            await this.prisma.message.create({
-                data: {
-                    id: messageId,
-                    conversationId: conversation.id,
-                    contactId: dbContact.id,
-                    type: $Enums.MessageType.TEXT,
-                    direction: $Enums.Direction.OUTBOUND,
-                    timestamp: BigInt(Date.now()),
-                    textBody: messageText,
-                    templateHeader: `Bem vindo ${name}`,
-                    templateFooter: 'Plataforma feita por Alessandro Cardoso',
-                    status: $Enums.MessageStatus.SENT,
-                    sentAt: new Date(),
-                },
-            });
-
-
-            return response;
-        } catch (error) {
-            console.log('Error sending invite to church:', error);
-            throw new HttpException('Error sending invite', HttpStatus.INTERNAL_SERVER_ERROR);
-        }
+        return this.uvasInviteToChurchAction.execute({
+            to,
+            name,
+            platform,
+            platformUrl,
+            login,
+            password,
+            projectId,
+        });
     }
 
     /**
@@ -803,105 +634,13 @@ export class WhatsappService {
         passwordResetUrl: string,
         projectId?: number
     ): Promise<any> {
-        try {
-            const components = [
-                {
-                    type: 'header',
-                    parameters: [
-                        {
-                            type: 'text',
-                            parameter_name: 'platform_name',
-                            text: platformName,
-                        },
-                    ],
-                },
-                {
-                    type: 'body',
-                    parameters: [
-                        {
-                            type: 'text',
-                            parameter_name: 'name',
-                            text: name,
-                        },
-                        {
-                            type: 'text',
-                            parameter_name: 'password_reset_url',
-                            text: passwordResetUrl,
-                        },
-                    ],
-                },
-            ];
-
-            const response = await this.outboundMessenger.sendTemplateMessage(
-                to,
-                'password_reset_url',
-                'pt_BR',
-                components
-            );
-
-            // Create the formatted message text
-            const messageText = `Olá ${name}
-Segue o link para redefinição de senha da sua conta:
-${passwordResetUrl}
-Se você não solicitou redefinição de senha, desconsidere essa mensagem.`;
-
-            // Check for existing contact with Brazilian number variations (with/without 9)
-            let dbContact = await this.findContactWithBrVariations(to);
-
-            // If no existing contact found, create a new one with custom name and project
-            if (!dbContact) {
-                dbContact = await this.prisma.contact.create({
-                    data: {
-                        waId: to,
-                        name: name,
-                        customName: name,
-                        projectId: projectId || null,
-                    },
-                });
-            } else {
-                // Update existing contact with custom name and project if not set
-                await this.prisma.contact.update({
-                    where: { id: dbContact.id },
-                    data: {
-                        customName: name,
-                        projectId: dbContact.projectId || projectId || null,
-                    },
-                });
-            }
-
-            // Get or create conversation
-            const conversation = await this.prisma.conversation.upsert({
-                where: { contactId: dbContact.id },
-                update: {},
-                create: {
-                    contactId: dbContact.id,
-                    unreadCount: 0,
-                },
-            });
-
-            // Save message to database
-            const messageId = response.messages[0].id;
-            await this.prisma.message.create({
-                data: {
-                    id: messageId,
-                    conversationId: conversation.id,
-                    contactId: dbContact.id,
-                    type: $Enums.MessageType.TEXT,
-                    direction: $Enums.Direction.OUTBOUND,
-                    timestamp: BigInt(Date.now()),
-                    textBody: messageText,
-                    templateHeader: `Redefinição de senha ${platformName}`,
-                    templateFooter: 'Plataforma feita por Alessandro Cardoso',
-                    status: $Enums.MessageStatus.SENT,
-                    sentAt: new Date(),
-                },
-            });
-
-            return response;
-        } catch (error) {
-            console.log('Error sending password reset:', error);
-            throw new HttpException('Error sending password reset', HttpStatus.INTERNAL_SERVER_ERROR);
-        }
+        return this.uvasPasswordResetAction.execute({
+            to,
+            name,
+            platformName,
+            passwordResetUrl,
+            projectId,
+        });
     }
 
     /**

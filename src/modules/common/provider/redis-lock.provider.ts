@@ -1,9 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { LoggerService } from '../../common/provider';
 
 @Injectable()
-export class RedisLock {
+export class RedisLock implements OnApplicationShutdown {
   private redis: Redis;
   private readonly DEFAULT_LOCK_TTL = 30; // 30 seconds
   private readonly LOCK_PREFIX = 'lock:';
@@ -149,6 +149,23 @@ export class RedisLock {
    * Close connection
    */
   async close(): Promise<void> {
-    await this.redis.quit();
+    if (!this.redis) {
+      return;
+    }
+
+    if (this.redis.status === 'end') {
+      return;
+    }
+
+    try {
+      await this.redis.quit();
+    } catch (error: any) {
+      this.logger.error(`Error closing Redis Lock connection: ${error.message}`);
+      this.redis.disconnect();
+    }
+  }
+
+  public async onApplicationShutdown(): Promise<void> {
+    await this.close();
   }
 }

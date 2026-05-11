@@ -4,3 +4,17 @@ export { PendingProjectSelectionAction } from './common/pending-project-selectio
 export { SwitchProjectAction } from './common/switch-project.action';
 export { MenuAction } from './common/menu.action';
 export { HelpAction } from './common/help.action';
+export {
+	UvasInviteToChurchAction,
+	UvasPasswordResetAction,
+	UvasFillReportReminderAction,
+	UvasRegisterAttendanceAction,
+	UvasUploadMagazineAction,
+	UvasUploadAnnouncementAction,
+	InviteToChurchPayload,
+	PasswordResetPayload,
+	FillReportReminderPayload,
+	RegisterAttendancePayload,
+	UploadMagazinePayload,
+	UploadAnnouncementPayload,
+} from './uvas';

@@ -15,10 +15,17 @@ import {
     HelpAction,
     MenuAction,
     PendingProjectSelectionAction,
-    SwitchProjectAction
+    SwitchProjectAction,
+    UvasFillReportReminderAction,
+    UvasInviteToChurchAction,
+    UvasPasswordResetAction,
+    UvasRegisterAttendanceAction,
+    UvasUploadAnnouncementAction,
+    UvasUploadMagazineAction
 } from './actions';
 import { WhatsappController, ConversationController } from './controller';
 import {
+    ContactResolverService,
     ConversationSessionService,
     MessagePersistenceService,
     OutboundMessengerService,
@@ -37,6 +44,7 @@ import {
         WhatsappService,
         OutboundMessengerService,
         MessagePersistenceService,
+        ContactResolverService,
         ProjectContextService,
         ConversationSessionService,
         ActionRouterService,
@@ -44,6 +52,12 @@ import {
         SwitchProjectAction,
         MenuAction,
         HelpAction,
+        UvasInviteToChurchAction,
+        UvasPasswordResetAction,
+        UvasFillReportReminderAction,
+        UvasRegisterAttendanceAction,
+        UvasUploadMagazineAction,
+        UvasUploadAnnouncementAction,
         ProjectAdapterRegistryService,
         DefaultProjectAdapter,
         UvasProjectAdapter,
