@@ -75,6 +75,8 @@ export class UvasInviteToChurchAction {
                 Por favor mude a sua senha após o primeiro acesso.
                 Plataforma feita por Alessandro Cardoso`;
 
+            const persistedMessageText = messageText.replace(password, '[REDACTED]');
+
             const dbContact = await this.contactResolverService.upsertContactSafely(
                 to,
                 {
@@ -105,7 +107,7 @@ export class UvasInviteToChurchAction {
                     type: $Enums.MessageType.TEXT,
                     direction: $Enums.Direction.OUTBOUND,
                     timestamp: BigInt(Date.now()),
-                    textBody: messageText,
+                    textBody: persistedMessageText,
                     templateHeader: `Bem vindo ${name}`,
                     templateFooter: 'Plataforma feita por Alessandro Cardoso',
                     status: $Enums.MessageStatus.SENT,

@@ -59,6 +59,8 @@ Segue o link para redefinição de senha da sua conta:
 ${passwordResetUrl}
 Se você não solicitou redefinição de senha, desconsidere essa mensagem.`;
 
+            const persistedMessageText = messageText.replace(passwordResetUrl, '[REDACTED_URL]');
+
             const existingContact = await this.contactResolverService.findByWaIdVariants(to);
             const dbContact = await this.contactResolverService.upsertContactSafely(
                 to,
@@ -91,7 +93,7 @@ Se você não solicitou redefinição de senha, desconsidere essa mensagem.`;
                     type: $Enums.MessageType.TEXT,
                     direction: $Enums.Direction.OUTBOUND,
                     timestamp: BigInt(Date.now()),
-                    textBody: messageText,
+                    textBody: persistedMessageText,
                     templateHeader: `Redefinição de senha ${platformName}`,
                     templateFooter: 'Plataforma feita por Alessandro Cardoso',
                     status: $Enums.MessageStatus.SENT,

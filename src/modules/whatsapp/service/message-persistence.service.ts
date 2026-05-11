@@ -133,7 +133,16 @@ export class MessagePersistenceService {
                 break;
         }
 
-        await this.prisma.message.create({ data: messageData });
+        try {
+            await this.prisma.message.create({ data: messageData });
+        } catch (error: any) {
+            if (this.isUniqueViolation(error)) {
+                // Duplicate inbound webhook delivery for the same WhatsApp message ID.
+                return;
+            }
+
+            throw error;
+        }
     }
 
     public async saveOutboundMessage(conversationId: string, contactId: string, textBody: string, wamid?: string): Promise<void> {
@@ -194,6 +203,10 @@ export class MessagePersistenceService {
         };
 
         return typeMap[type] || $Enums.MessageType.UNSUPPORTED;
+    }
+
+    private isUniqueViolation(error: any): boolean {
+        return error?.code === 'P2002';
     }
 
 }

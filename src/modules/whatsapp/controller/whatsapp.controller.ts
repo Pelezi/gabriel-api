@@ -1,6 +1,6 @@
-import { Controller, Get, Post, Query, Body, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Query, Body, Res, HttpStatus, Req } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags, ApiQuery } from '@nestjs/swagger';
-import { FastifyReply } from 'fastify';
+import { FastifyReply, FastifyRequest } from 'fastify';
 
 import { WhatsappService } from '../service';
 
@@ -51,9 +51,24 @@ export class WhatsappController {
     })
     @ApiResponse({ status: HttpStatus.OK, description: 'Webhook processed successfully' })
     public async whatsappWebhookPost(
+        @Req() req: FastifyRequest,
         @Body() body: any,
         @Res() res: FastifyReply
     ): Promise<void> {
+        const signatureHeader = req.headers['x-hub-signature-256'];
+        const rawBody = (req as any).rawBody;
+        const rawBodyString = typeof rawBody === 'string'
+            ? rawBody
+            : Buffer.isBuffer(rawBody)
+                ? rawBody.toString('utf8')
+                : '';
+
+        const isSignatureValid = this.whatsappService.verifyWebhookSignature(signatureHeader, rawBodyString);
+        if (!isSignatureValid) {
+            res.status(HttpStatus.FORBIDDEN).send('Invalid webhook signature');
+            return;
+        }
+
         await this.whatsappService.processWebhookEvent(body);
         res.status(HttpStatus.OK).send('Webhook processed');
     }

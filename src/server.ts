@@ -64,6 +64,13 @@ async function bootstrap(): Promise<void> {
         new FastifyAdapter()
     );
 
+    await app.register(require('fastify-raw-body'), {
+        field: 'rawBody',
+        global: true,
+        encoding: 'utf8',
+        runFirst: true,
+    });
+
     // Register multipart/form-data support for file uploads
     await app.register(require('@fastify/multipart'), {
         limits: {

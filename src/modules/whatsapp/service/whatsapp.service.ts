@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { LoggerService } from '../../common/provider';
 import { PrismaService } from '../../common';
 import { $Enums } from '../../../generated/prisma/client';
@@ -20,6 +21,8 @@ import { ActionRouterService } from '../actions';
 
 @Injectable()
 export class WhatsappService {
+
+    private readonly webhookAppSecret = process.env.WHATSAPP_WEBHOOK_APP_SECRET || process.env.WHATSAPP_APP_SECRET;
 
     public constructor(
         @InjectQueue('whatsapp-webhook') private readonly webhookQueue: Queue,
@@ -63,6 +66,35 @@ export class WhatsappService {
         return false;
     }
 
+    public verifyWebhookSignature(signatureHeader: string | string[] | undefined, rawBody: string): boolean {
+        if (!this.webhookAppSecret) {
+            this.logger.error('WHATSAPP_WEBHOOK_APP_SECRET (or WHATSAPP_APP_SECRET) is not configured');
+            return false;
+        }
+
+        if (!signatureHeader || !rawBody) {
+            return false;
+        }
+
+        const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+        if (!signature?.startsWith('sha256=')) {
+            return false;
+        }
+
+        const expectedSignature = `sha256=${createHmac('sha256', this.webhookAppSecret)
+            .update(rawBody, 'utf8')
+            .digest('hex')}`;
+
+        const receivedBuffer = Buffer.from(signature, 'utf8');
+        const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
+
+        if (receivedBuffer.length !== expectedBuffer.length) {
+            return false;
+        }
+
+        return timingSafeEqual(receivedBuffer, expectedBuffer);
+    }
+
     /**
      * Process incoming webhook event (enqueue for background processing)
      *
@@ -70,7 +102,7 @@ export class WhatsappService {
      */
     public async processWebhookEvent(body: any): Promise<void> {
         try {
-            this.logger.info('WhatsApp webhook received: ' + JSON.stringify(body));
+            this.logger.info('WhatsApp webhook received');
 
             const entry = body.entry?.[0];
             const changes = entry?.changes?.[0];

@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Patch, Param, Body, Query, HttpStatus, Req, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags, ApiParam, ApiQuery, ApiSecurity, ApiBearerAuth } from '@nestjs/swagger';
+import { Controller, Get, Post, Patch, Param, Body, HttpStatus, Req, UseGuards, ValidationPipe } from '@nestjs/common';
+import { ApiOperation, ApiResponse, ApiTags, ApiParam, ApiSecurity, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
 import { WhatsappService } from '../service';
 import { ApiKeyOrJwtGuard, ApiKeyOrJwtRequest } from '../../common/security';
+import { InviteToChurchBodyDto, PasswordResetBodyDto } from '../model';
 
 @Controller('conversations')
 @ApiTags('conversations')
@@ -54,25 +55,23 @@ export class ConversationController {
         summary: 'Send invite to church template',
         description: 'Sends an access_created template message to invite someone to church platform'
     })
-    @ApiQuery({ name: 'to', description: 'Recipient phone number', required: true })
-    @ApiQuery({ name: 'name', description: 'Recipient name', required: true })
-    @ApiQuery({ name: 'platform', description: 'Platform name', required: true })
-    @ApiQuery({ name: 'platformUrl', description: 'Platform URL', required: true })
-    @ApiQuery({ name: 'login', description: 'Login credential', required: true })
-    @ApiQuery({ name: 'password', description: 'Password credential', required: true })
+    @ApiBody({ type: InviteToChurchBodyDto })
     @ApiResponse({ status: HttpStatus.OK, description: 'Invite sent successfully' })
     public async inviteToChurch(
         @Req() request: ApiKeyOrJwtRequest,
-        @Query('to') to: string,
-        @Query('name') name: string,
-        @Query('platform') platform: string,
-        @Query('platformUrl') platformUrl: string,
-        @Query('login') login: string,
-        @Query('password') password: string
+        @Body(new ValidationPipe({ whitelist: true, transform: true })) body: InviteToChurchBodyDto
     ): Promise<any> {
         const projectId = request.project?.id;
 
-        return this.whatsappService.inviteToChurch(to, name, platform, platformUrl, login, password, projectId);
+        return this.whatsappService.inviteToChurch(
+            body.to,
+            body.name,
+            body.platform,
+            body.platformUrl,
+            body.login,
+            body.password,
+            projectId
+        );
     }
 
     @Post('passwordReset')
@@ -80,20 +79,20 @@ export class ConversationController {
         summary: 'Send password reset template',
         description: 'Sends a password_reset_url template message for password reset'
     })
-    @ApiQuery({ name: 'to', description: 'Recipient phone number', required: true })
-    @ApiQuery({ name: 'name', description: 'Recipient name', required: true })
-    @ApiQuery({ name: 'platform_name', description: 'Platform name', required: true })
-    @ApiQuery({ name: 'password_reset_url', description: 'Password reset URL', required: true })
+    @ApiBody({ type: PasswordResetBodyDto })
     @ApiResponse({ status: HttpStatus.OK, description: 'Password reset message sent successfully' })
     public async passwordReset(
         @Req() request: ApiKeyOrJwtRequest,
-        @Query('to') to: string,
-        @Query('name') name: string,
-        @Query('platform_name') platformName: string,
-        @Query('password_reset_url') passwordResetUrl: string
+        @Body(new ValidationPipe({ whitelist: true, transform: true })) body: PasswordResetBodyDto
     ): Promise<any> {
         const projectId = request.project?.id;
-        return this.whatsappService.passwordReset(to, name, platformName, passwordResetUrl, projectId);
+        return this.whatsappService.passwordReset(
+            body.to,
+            body.name,
+            body.platformName,
+            body.passwordResetUrl,
+            projectId
+        );
     }
 
     @Patch(':id/custom-name')
