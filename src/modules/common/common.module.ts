@@ -6,6 +6,8 @@ import { LogInterceptor } from './flow';
 import { configProvider, LoggerService, PrismaService } from './provider';
 import { EmailService } from './provider/email.provider';
 import { AwsService } from './provider/aws.provider';
+import { RedisCache } from './provider/redis-cache.provider';
+import { RedisLock } from './provider/redis-lock.provider';
 
 @Module({
     imports: [
@@ -17,7 +19,9 @@ import { AwsService } from './provider/aws.provider';
         LogInterceptor,
         PrismaService,
         EmailService,
-        AwsService
+        AwsService,
+        RedisCache,
+        RedisLock
     ],
     exports: [
         configProvider,
@@ -25,7 +29,9 @@ import { AwsService } from './provider/aws.provider';
         LogInterceptor,
         PrismaService,
         EmailService,
-        AwsService
+        AwsService,
+        RedisCache,
+        RedisLock
     ],
     controllers: [
         HealthController

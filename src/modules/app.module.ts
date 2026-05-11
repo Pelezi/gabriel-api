@@ -6,10 +6,12 @@ import { UserModule } from './user/user.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { ProjectModule } from './project/project.module';
 import { NotificationModule } from './notification/notification.module';
+import { QueueModule } from './queue/queue.module';
 
 @Module({
     imports: [
         CommonModule,
+        QueueModule,
         AuthModule,
         UserModule,
         WhatsappModule,

@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 
 import { ProjectAdapterRegistryService } from '../integrations';
 import { PrismaService } from '../../common';
+import { RedisCache } from '../../common/provider/redis-cache.provider';
+import { RedisLock } from '../../common/provider/redis-lock.provider';
 import { MessagePersistenceService } from './message-persistence.service';
 import { OutboundMessengerService } from './outbound-messenger.service';
 import { ConversationSessionService } from './conversation-session.service';
@@ -9,11 +11,10 @@ import { ConversationSessionService } from './conversation-session.service';
 @Injectable()
 export class ProjectContextService {
 
-    private readonly projectCheckLocks = new Map<string, Promise<number[]>>();
-    private readonly projectCheckCache = new Map<string, { projectIds: number[]; timestamp: number }>();
-
     public constructor(
         private readonly prisma: PrismaService,
+        private readonly redisCache: RedisCache,
+        private readonly redisLock: RedisLock,
         private readonly outboundMessenger: OutboundMessengerService,
         private readonly messagePersistence: MessagePersistenceService,
         private readonly sessionService: ConversationSessionService,
@@ -21,34 +22,48 @@ export class ProjectContextService {
     ) {}
 
     public async checkContactInProjectsWithCache(phoneNumber: string): Promise<number[]> {
-        const cached = this.projectCheckCache.get(phoneNumber);
-        const CACHE_TTL = 5 * 60 * 1000;
-
-        if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+        const cacheKey = `project-check:${phoneNumber}`;
+        const CACHE_TTL = 5 * 60; // 5 minutes in seconds
+        
+        // Try to get from cache first
+        const cached = await this.redisCache.get<number[]>(cacheKey);
+        if (cached) {
             console.log(`Using cached project check for ${phoneNumber}`);
-            return cached.projectIds;
+            return cached;
         }
 
-        const existingCheck = this.projectCheckLocks.get(phoneNumber);
-        if (existingCheck) {
-            console.log(`Waiting for existing project check for ${phoneNumber}`);
-            return existingCheck;
-        }
+        // Try to acquire lock for this phone number (with 30 second wait)
+        const lockKey = `project-check-lock:${phoneNumber}`;
+        const lockId = await this.redisLock.waitAndAcquire(lockKey, 30000, 30);
 
-        const checkPromise = this.checkContactInProjects(phoneNumber);
-        this.projectCheckLocks.set(phoneNumber, checkPromise);
+        if (!lockId) {
+            console.warn(`Failed to acquire lock for project check of ${phoneNumber}, retrying from cache`);
+            const retryCache = await this.redisCache.get<number[]>(cacheKey);
+            if (retryCache) {
+                return retryCache;
+            }
+            // Fallback to direct check
+            return this.checkContactInProjects(phoneNumber);
+        }
 
         try {
-            const projectIds = await checkPromise;
+            // Check cache again after acquiring lock (another request might have populated it)
+            const doubleCheckCache = await this.redisCache.get<number[]>(cacheKey);
+            if (doubleCheckCache) {
+                console.log(`Another request populated cache for ${phoneNumber}`);
+                return doubleCheckCache;
+            }
 
-            this.projectCheckCache.set(phoneNumber, {
-                projectIds,
-                timestamp: Date.now(),
-            });
+            // Perform the check
+            const projectIds = await this.checkContactInProjects(phoneNumber);
+
+            // Store in cache
+            await this.redisCache.set(cacheKey, projectIds, CACHE_TTL);
 
             return projectIds;
         } finally {
-            setTimeout(() => this.projectCheckLocks.delete(phoneNumber), 5000);
+            // Always release the lock
+            await this.redisLock.release(lockKey, lockId);
         }
     }
 

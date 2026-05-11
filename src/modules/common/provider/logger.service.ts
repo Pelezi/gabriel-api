@@ -32,8 +32,12 @@ export class LoggerService {
         this.instance.info(message);
     }
 
-    public error(message: string) {
-        this.instance.error(message);
+    public error(message: string, stack?: string) {
+        if (stack) {
+            this.instance.error(`${message}\n${stack}`);
+        } else {
+            this.instance.error(message);
+        }
     }
 
     private isTestEnv(): boolean {

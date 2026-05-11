@@ -1,9 +1,12 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { LoggerService } from '../../common/provider';
 import { PrismaService } from '../../common';
 import { $Enums } from '../../../generated/prisma/client';
 import { NotificationService } from '../../notification';
 import { AwsService } from '../../common/provider/aws.provider';
+import { RedisCache } from '../../common/provider/redis-cache.provider';
 import { MessagePersistenceService } from './message-persistence.service';
 import { OutboundMessengerService } from './outbound-messenger.service';
 import { ProjectContextService } from './project-context.service';
@@ -14,10 +17,13 @@ import { ActionRouterService } from '../actions';
 export class WhatsappService {
 
     public constructor(
+        @InjectQueue('whatsapp-webhook') private readonly webhookQueue: Queue,
         private readonly logger: LoggerService,
         private readonly prisma: PrismaService,
         private readonly notificationService: NotificationService,
         private readonly awsService: AwsService,
+        private readonly redisCache: RedisCache,
+
         private readonly messagePersistence: MessagePersistenceService,
         private readonly outboundMessenger: OutboundMessengerService,
         private readonly projectContextService: ProjectContextService,
@@ -103,29 +109,91 @@ export class WhatsappService {
     }
 
     /**
-     * Process incoming webhook event
+     * Process incoming webhook event (enqueue for background processing)
      *
      * @param body Webhook event body
      */
     public async processWebhookEvent(body: any): Promise<void> {
-        this.logger.info('WhatsApp webhook received: ' + JSON.stringify(body));
+        try {
+            this.logger.info('WhatsApp webhook received: ' + JSON.stringify(body));
 
-        const entry = body.entry?.[0];
-        const changes = entry?.changes?.[0];
-        const value = changes?.value;
+            const entry = body.entry?.[0];
+            const changes = entry?.changes?.[0];
+            const value = changes?.value;
 
-        if (!value) {
+            if (!value) {
+                return;
+            }
+
+            // Build a deterministic idempotency key from WhatsApp payload identifiers.
+            const messageId = value.messages?.[0]?.id;
+            const statusId = value.statuses?.[0]?.id;
+            const fallbackId = body?.entry?.[0]?.id;
+            const sourceId = messageId || statusId || fallbackId || `${Date.now()}`;
+            const idempotencyKey = `webhook-${value.messaging_product || 'whatsapp'}-${sourceId}`;
+
+            // Enqueue the webhook for background processing
+            await this.webhookQueue.add(
+                'process-webhook',
+                { body, idempotencyKey },
+                {
+                    jobId: idempotencyKey,
+                    attempts: 3,
+                    backoff: {
+                        type: 'exponential',
+                        delay: 2000,
+                    },
+                    removeOnComplete: true,
+                    removeOnFail: false,
+                }
+            );
+
+            this.logger.info(`Webhook enqueued with idempotencyKey: ${idempotencyKey}`);
+        } catch (error) {
+            this.logger.error(`Error enqueueing webhook: ${error.message}`, error.stack);
+            throw error;
+        }
+    }
+
+    /**
+     * Process incoming webhook event (called by background worker)
+     *
+     * @param body Webhook event body
+     * @param idempotencyKey Unique key for deduplication
+     */
+    public async processWebhookEventAsync(body: any, idempotencyKey: string): Promise<void> {
+        // Check if already processed (idempotency)
+        const processedKey = `processed-webhook:${idempotencyKey}`;
+        const alreadyProcessed = await this.redisCache.exists(processedKey);
+        if (alreadyProcessed) {
+            this.logger.info(`Webhook already processed: ${idempotencyKey}`);
             return;
         }
 
-        // Handle incoming messages
-        if (value.messages) {
-            await this.handleIncomingMessage(value);
-        }
+        try {
+            const entry = body.entry?.[0];
+            const changes = entry?.changes?.[0];
+            const value = changes?.value;
 
-        // Handle status updates
-        if (value.statuses) {
-            await this.handleStatusUpdate(value);
+            if (!value) {
+                return;
+            }
+
+            // Handle incoming messages
+            if (value.messages) {
+                await this.handleIncomingMessage(value);
+            }
+
+            // Handle status updates
+            if (value.statuses) {
+                await this.handleStatusUpdate(value);
+            }
+
+            // Mark as processed in cache for 24 hours
+            await this.redisCache.set(processedKey, true, 86400);
+        } catch (error) {
+            this.logger.error(`Error processing webhook async: ${error.message}`, error.stack);
+            throw error;
         }
     }
 

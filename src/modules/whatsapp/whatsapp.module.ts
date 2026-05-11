@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 
 import { CommonModule } from '../common';
 import { NotificationModule } from '../notification';
+import { QueueModule } from '../queue';
+import { WhatsappWebhookProcessor } from '../queue/processors/whatsapp-webhook.processor';
 import {
     DefaultProjectAdapter,
     ProjectAdapterRegistryService,
@@ -27,9 +29,11 @@ import {
 @Module({
     imports: [
         CommonModule,
+        QueueModule,
         NotificationModule
     ],
     providers: [
+        WhatsappWebhookProcessor,
         WhatsappService,
         OutboundMessengerService,
         MessagePersistenceService,
