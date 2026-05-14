@@ -1,0 +1,20 @@
+# DEV DOCKERFILE — do not use in production
+# Source code is mounted as a volume by docker-compose.dev.yml for hot reload
+FROM node:20-alpine
+
+RUN apk add --no-cache openssl libc6-compat
+
+WORKDIR /home/node
+
+# Install all dependencies (including devDependencies for nodemon, ts-node, etc.)
+COPY package*.json ./
+RUN npm config set fetch-retries 5 && \
+    npm config set fetch-retry-mintimeout 20000 && \
+    npm config set fetch-retry-maxtimeout 120000 && \
+    npm ci
+
+# Source is NOT copied here — it will be bind-mounted at runtime.
+# Prisma client is generated at startup so it's always in sync with the schema.
+# We call nodemon directly instead of `npm run dev` because that script uses
+# env-cmd to load .env — Docker already injects those vars via env_file.
+CMD ["sh", "-c", "npx prisma generate && npx nodemon"]
