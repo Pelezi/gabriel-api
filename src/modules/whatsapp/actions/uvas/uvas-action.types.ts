@@ -18,9 +18,11 @@ export type PasswordResetPayload = {
 
 export type FillReportReminderPayload = {
     to: string;
+    templateName: 'report_celula' | 'report_service';
+    leaderName: string;
+    cellName: string;
+    weekPeriod: string;
     projectId?: number;
-    reminderTitle?: string;
-    reminderBody?: string;
 };
 
 export type RegisterAttendancePayload = {

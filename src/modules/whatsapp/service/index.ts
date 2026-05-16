@@ -4,3 +4,4 @@ export { MessagePersistenceService } from './message-persistence.service';
 export { ProjectContextService } from './project-context.service';
 export { ConversationSessionService } from './conversation-session.service';
 export { ContactResolverService } from './contact-resolver.service';
+export { ChatWithOwnerTimeoutService } from './chat-with-owner-timeout.service';

@@ -101,6 +101,56 @@ export class ConversationSessionService {
         return session?.state === $Enums.ConversationSessionState.AWAITING_PROJECT_SELECTION;
     }
 
+    public async setAwaitingActionSelection(contactId: string): Promise<any> {
+        return this.prisma.conversationSession.update({
+            where: { contactId },
+            data: {
+                state: $Enums.ConversationSessionState.AWAITING_ACTION_SELECTION,
+                currentActionKey: null,
+                contextJson: Prisma.DbNull,
+            },
+        });
+    }
+
+    public isAwaitingActionSelection(session: any): boolean {
+        return session?.state === $Enums.ConversationSessionState.AWAITING_ACTION_SELECTION;
+    }
+
+    public async setCurrentActionKey(contactId: string, actionKey: string | null): Promise<any> {
+        return this.prisma.conversationSession.update({
+            where: { contactId },
+            data: { currentActionKey: actionKey },
+        });
+    }
+
+    public async setChatWithOwner(contactId: string): Promise<any> {
+        return this.prisma.conversationSession.update({
+            where: { contactId },
+            data: {
+                state: $Enums.ConversationSessionState.CHAT_WITH_OWNER,
+                currentActionKey: 'chat_with_owner',
+                contextJson: {
+                    chatWithOwnerStartedAt: new Date().toISOString(),
+                } as any,
+            },
+        });
+    }
+
+    public isChatWithOwner(session: any): boolean {
+        return session?.state === $Enums.ConversationSessionState.CHAT_WITH_OWNER || session?.currentActionKey === 'chat_with_owner';
+    }
+
+    public async resetToIdle(contactId: string): Promise<any> {
+        return this.prisma.conversationSession.update({
+            where: { contactId },
+            data: {
+                state: $Enums.ConversationSessionState.IDLE,
+                currentActionKey: null,
+                contextJson: Prisma.DbNull,
+            },
+        });
+    }
+
     public getAvailableProjectIds(session: any): number[] {
         const ids = session?.availableProjectIds;
         if (!Array.isArray(ids)) {

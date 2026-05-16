@@ -13,6 +13,8 @@ model User {
   // User/Auth fields (from old User model)
   email         String?      @unique
   password      String?
+  phone         String?
+  isOwner       Boolean      @default(false) @map("is_owner")
   role          String
   refreshToken  String?     @map("refresh_token")
 
@@ -186,6 +188,7 @@ enum ConversationSessionState {
   AWAITING_ACTION_INPUT
   AWAITING_CONFIRMATION
   PROCESSING_ASYNC
+  CHAT_WITH_OWNER
 }
 
 // Push notification subscriptions

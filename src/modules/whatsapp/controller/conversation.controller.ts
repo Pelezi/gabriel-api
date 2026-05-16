@@ -2,7 +2,7 @@ import { Controller, Get, Post, Patch, Param, Body, HttpStatus, Req, UseGuards, 
 import { ApiOperation, ApiResponse, ApiTags, ApiParam, ApiSecurity, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
 import { WhatsappService } from '../service';
 import { ApiKeyOrJwtGuard, ApiKeyOrJwtRequest } from '../../common/security';
-import { InviteToChurchBodyDto, PasswordResetBodyDto } from '../model';
+import { FillReportReminderBodyDto, InviteToChurchBodyDto, PasswordResetBodyDto } from '../model';
 
 @Controller('conversations')
 @ApiTags('conversations')
@@ -91,6 +91,52 @@ export class ConversationController {
             body.name,
             body.platformName,
             body.passwordResetUrl,
+            projectId
+        );
+    }
+
+    @Post('reportCelulaReminder')
+    @ApiOperation({
+        summary: 'Send culto attendance report reminder template',
+        description: 'Sends the report_celula template message'
+    })
+    @ApiBody({ type: FillReportReminderBodyDto })
+    @ApiResponse({ status: HttpStatus.OK, description: 'Report reminder message sent successfully' })
+    public async reportCelulaReminder(
+        @Req() request: ApiKeyOrJwtRequest,
+        @Body(new ValidationPipe({ whitelist: true, transform: true })) body: FillReportReminderBodyDto
+    ): Promise<any> {
+        const projectId = request.project?.id;
+
+        return this.whatsappService.fillReportReminder(
+            body.to,
+            'report_celula',
+            body.leaderName,
+            body.cellName,
+            body.weekPeriod,
+            projectId
+        );
+    }
+
+    @Post('reportServiceReminder')
+    @ApiOperation({
+        summary: 'Send cell report reminder template',
+        description: 'Sends the report_service template message'
+    })
+    @ApiBody({ type: FillReportReminderBodyDto })
+    @ApiResponse({ status: HttpStatus.OK, description: 'Service report reminder message sent successfully' })
+    public async reportServiceReminder(
+        @Req() request: ApiKeyOrJwtRequest,
+        @Body(new ValidationPipe({ whitelist: true, transform: true })) body: FillReportReminderBodyDto
+    ): Promise<any> {
+        const projectId = request.project?.id;
+
+        return this.whatsappService.fillReportReminder(
+            body.to,
+            'report_service',
+            body.leaderName,
+            body.cellName,
+            body.weekPeriod,
             projectId
         );
     }

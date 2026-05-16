@@ -24,4 +24,12 @@ export class OutboundMessengerService {
         return this.whatsappApi.sendTemplateMessage(to, templateName, languageCode, components);
     }
 
+    public async sendReplyButtonsMessage(
+        to: string,
+        bodyText: string,
+        buttons: Array<{ id: string; title: string }>
+    ): Promise<any> {
+        return this.whatsappApi.sendReplyButtonsMessage(to, bodyText, buttons);
+    }
+
 }

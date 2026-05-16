@@ -1,0 +1,3 @@
+ALTER TABLE "user"
+ADD COLUMN "phone" TEXT,
+ADD COLUMN "is_owner" BOOLEAN NOT NULL DEFAULT false;

@@ -148,4 +148,41 @@ export class WhatsAppApiHelper {
 
     return response.data;
   }
+
+  async sendReplyButtonsMessage(
+    to: string,
+    bodyText: string,
+    buttons: Array<{ id: string; title: string }>
+  ): Promise<any> {
+    const url = `${WHATSAPP_API_URL}/${this.phoneNumberId}/messages`;
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: bodyText },
+        action: {
+          buttons: buttons.map((button) => ({
+            type: 'reply',
+            reply: {
+              id: button.id,
+              title: button.title,
+            },
+          })),
+        },
+      },
+    };
+
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${this.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    return response.data;
+  }
 }

@@ -12,9 +12,11 @@ import {
 } from './integrations';
 import {
     ActionRouterService,
+    ChatWithOwnerAction,
     HelpAction,
     MenuAction,
     PendingProjectSelectionAction,
+    ProjectActionSelectionAction,
     SwitchProjectAction,
     UvasFillReportReminderAction,
     UvasInviteToChurchAction,
@@ -25,6 +27,7 @@ import {
 } from './actions';
 import { WhatsappController, ConversationController } from './controller';
 import {
+    ChatWithOwnerTimeoutService,
     ContactResolverService,
     ConversationSessionService,
     MessagePersistenceService,
@@ -45,10 +48,13 @@ import {
         OutboundMessengerService,
         MessagePersistenceService,
         ContactResolverService,
+        ChatWithOwnerTimeoutService,
         ProjectContextService,
         ConversationSessionService,
         ActionRouterService,
+        ChatWithOwnerAction,
         PendingProjectSelectionAction,
+        ProjectActionSelectionAction,
         SwitchProjectAction,
         MenuAction,
         HelpAction,

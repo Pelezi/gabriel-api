@@ -1,6 +1,9 @@
 import * as winston from 'winston';
 
 export class LoggerService {
+    public warn(message: string) {
+        this.instance.warn(message);
+    }
 
     private readonly instance: winston.Logger;
 

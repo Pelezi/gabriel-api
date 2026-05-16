@@ -10,7 +10,8 @@ import { AwsService } from '../../common/provider/aws.provider';
 import { RedisCache } from '../../common/provider/redis-cache.provider';
 import {
     UvasInviteToChurchAction,
-    UvasPasswordResetAction
+    UvasPasswordResetAction,
+    UvasFillReportReminderAction
 } from '../actions';
 import { MessagePersistenceService } from './message-persistence.service';
 import { OutboundMessengerService } from './outbound-messenger.service';
@@ -39,7 +40,8 @@ export class WhatsappService {
         private readonly sessionService: ConversationSessionService,
         private readonly actionRouterService: ActionRouterService,
         private readonly uvasInviteToChurchAction: UvasInviteToChurchAction,
-        private readonly uvasPasswordResetAction: UvasPasswordResetAction
+        private readonly uvasPasswordResetAction: UvasPasswordResetAction,
+        private readonly uvasFillReportReminderAction: UvasFillReportReminderAction
     ) {}
 
     /**
@@ -102,13 +104,14 @@ export class WhatsappService {
      */
     public async processWebhookEvent(body: any): Promise<void> {
         try {
-            this.logger.info('WhatsApp webhook received');
+            this.logger.info('[SERVICE] Iniciando processamento do webhook (etapa: recebimento)');
 
             const entry = body.entry?.[0];
             const changes = entry?.changes?.[0];
             const value = changes?.value;
 
             if (!value) {
+                this.logger.warn('[SERVICE] Payload do webhook sem value, ignorando.');
                 return;
             }
 
@@ -119,6 +122,7 @@ export class WhatsappService {
             const sourceId = messageId || statusId || fallbackId || `${Date.now()}`;
             const idempotencyKey = `webhook-${value.messaging_product || 'whatsapp'}-${sourceId}`;
 
+            this.logger.info(`[SERVICE] Enfileirando evento na fila para processamento assíncrono. idempotencyKey=${idempotencyKey}`);
             // Enqueue the webhook for background processing
             await this.webhookQueue.add(
                 'process-webhook',
@@ -135,9 +139,9 @@ export class WhatsappService {
                 }
             );
 
-            this.logger.info(`Webhook enqueued with idempotencyKey: ${idempotencyKey}`);
+            this.logger.info(`[SERVICE] Evento enfileirado com sucesso. idempotencyKey=${idempotencyKey}`);
         } catch (error: any) {
-            this.logger.error(`Error enqueueing webhook: ${error.message}`, error.stack);
+            this.logger.error(`[SERVICE] Erro ao enfileirar webhook: ${error.message}`, error.stack);
             throw error;
         }
     }
@@ -151,9 +155,10 @@ export class WhatsappService {
     public async processWebhookEventAsync(body: any, idempotencyKey: string): Promise<void> {
         // Check if already processed (idempotency)
         const processedKey = `processed-webhook:${idempotencyKey}`;
+        this.logger.info(`[WORKER] Iniciando processamento assíncrono do webhook. idempotencyKey=${idempotencyKey}`);
         const alreadyProcessed = await this.redisCache.exists(processedKey);
         if (alreadyProcessed) {
-            this.logger.info(`Webhook already processed: ${idempotencyKey}`);
+            this.logger.info(`[WORKER] Webhook já processado anteriormente: ${idempotencyKey}`);
             return;
         }
 
@@ -163,23 +168,27 @@ export class WhatsappService {
             const value = changes?.value;
 
             if (!value) {
+                this.logger.warn('[WORKER] Payload do webhook sem value, ignorando.');
                 return;
             }
 
             // Handle incoming messages
             if (value.messages) {
+                this.logger.info('[WORKER] Processando mensagem recebida do WhatsApp');
                 await this.handleIncomingMessage(value);
             }
 
             // Handle status updates
             if (value.statuses) {
+                this.logger.info('[WORKER] Processando atualização de status do WhatsApp');
                 await this.handleStatusUpdate(value);
             }
 
             // Mark as processed in cache for 24 hours
             await this.redisCache.set(processedKey, true, 86400);
+            this.logger.info(`[WORKER] Webhook processado e marcado como concluído: ${idempotencyKey}`);
         } catch (error: any) {
-            this.logger.error(`Error processing webhook async: ${error.message}`, error.stack);
+            this.logger.error(`[WORKER] Erro ao processar webhook async: ${error.message}`, error.stack);
             throw error;
         }
     }
@@ -224,7 +233,7 @@ export class WhatsappService {
                 const welcomeMsg = await this.outboundMessenger.sendTextMessage(contact.wa_id, welcomeText);
                 await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, welcomeText, welcomeMsg?.messages?.[0]?.id);
 
-                // // Second message about checking registration
+                // Second message about checking registration
                 const checkingText = `Estamos conferindo se o seu número está cadastrado em algum projeto para direcioná-lo corretamente...`;
                 const checkingMsg = await this.outboundMessenger.sendTextMessage(contact.wa_id, checkingText);
                 await this.messagePersistence.saveOutboundMessage(conversation.id, dbContact.id, checkingText, checkingMsg?.messages?.[0]?.id);
@@ -269,7 +278,19 @@ export class WhatsappService {
      */
     private async processMessageLogic(dbContact: any, contact: any, message: any, conversation: any): Promise<void> {
         try {
-            const messageText = message.type === 'text' ? message.text.body.trim() : '';
+            const messageText = message.type === 'text'
+                ? message.text.body.trim()
+                : message.type === 'button'
+                    ? (message.button?.text || message.button?.payload || '').trim()
+                    : message.type === 'interactive'
+                        ? (
+                            message.interactive?.button_reply?.title
+                            || message.interactive?.button_reply?.id
+                            || message.interactive?.list_reply?.title
+                            || message.interactive?.list_reply?.id
+                            || ''
+                        ).trim()
+                    : '';
             let session = await this.sessionService.getOrCreateSession(dbContact.id, dbContact.projectId ?? null);
 
             const actionResult = await this.actionRouterService.route({
@@ -293,7 +314,14 @@ export class WhatsappService {
 
                 // If still no project after selection (not in any project), notify
                 if (!session.activeProjectId && !this.sessionService.isAwaitingProjectSelection(session)) {
-                    const notRegisteredText = `❌ Desculpe, você não está cadastrado em nenhum projeto no momento.`;
+                    const notRegisteredText = [
+                        '❌ Desculpe, você não está cadastrado em nenhum projeto no momento.',
+                        '',
+                        'Se quiser, você pode falar com Alessandro:',
+                        '0 - Falar com Alessandro',
+                        '',
+                        '❌ Digite *cancelar* para sair.'
+                    ].join('\n');
                     const sentMessage = await this.outboundMessenger.sendTextMessage(
                         contact.wa_id,
                         notRegisteredText
@@ -512,6 +540,22 @@ export class WhatsappService {
                 },
             });
 
+            const normalizedText = text.toLowerCase().trim();
+            if (normalizedText === 'encerrar conversa') {
+                const session = await this.sessionService.getSession(conversation.contactId);
+                if (this.sessionService.isChatWithOwner(session)) {
+                    await this.sessionService.resetToIdle(conversation.contactId);
+
+                    if (session?.activeProjectId || conversation.contact?.projectId) {
+                        await this.projectContextService.sendProjectMenu(
+                            { id: conversation.contactId, waId: conversation.contact.waId },
+                            session?.activeProjectId || conversation.contact.projectId,
+                            conversationId
+                        );
+                    }
+                }
+            }
+
             // Convert BigInt to string for JSON serialization
             return {
                 ...message,
@@ -671,6 +715,27 @@ export class WhatsappService {
             name,
             platformName,
             passwordResetUrl,
+            projectId,
+        });
+    }
+
+    /**
+     * Send fill report reminder template message
+     */
+    public async fillReportReminder(
+        to: string,
+        templateName: 'report_celula' | 'report_service',
+        leaderName: string,
+        cellName: string,
+        weekPeriod: string,
+        projectId?: number
+    ): Promise<any> {
+        return this.uvasFillReportReminderAction.execute({
+            to,
+            templateName,
+            leaderName,
+            cellName,
+            weekPeriod,
             projectId,
         });
     }
