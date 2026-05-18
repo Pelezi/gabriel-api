@@ -1452,6 +1452,31 @@ export class ProjectActionSelectionAction implements ActionHandler {
             const selectedCell = cells[idx - 1];
             const updatedContext = { ...context, selectedCellId: selectedCell.id };
 
+            if (context?.forcedReportType === 'culto' || context?.forcedReportType === 'celula') {
+                const project = await this.prisma.project.findUnique({ where: { id: session?.activeProjectId } });
+
+                if (!project) {
+                    await this.finishFlowWithProjectMenu(
+                        dbContact,
+                        waId,
+                        conversation,
+                        '❌ Não consegui carregar o projeto para continuar o preenchimento do relatório.',
+                        session?.activeProjectId
+                    );
+                    return { handled: true, stopProcessing: true };
+                }
+
+                return this.startReportFlowForLatestWeek(
+                    dbContact,
+                    waId,
+                    conversation,
+                    project,
+                    selectedCell.id,
+                    context.forcedReportType,
+                    updatedContext
+                );
+            }
+
             // Move to report type selection
             await this.prisma.conversationSession.update({
                 where: { contactId: dbContact.id },
@@ -2703,26 +2728,128 @@ Responda *sim* para continuar ou *não* para voltar ao menu do projeto.`,
         waId: string,
         conversation: any
     ): Promise<ActionResult> {
-        if (normalized.includes('presença no culto')) {
+        const forcedReportType: 'culto' | 'celula' = normalized.includes('presença no culto') ? 'culto' : 'celula';
+
+        const uvasProject = await this.prisma.project.findFirst({
+            where: { name: { contains: 'uvas', mode: 'insensitive' } },
+        });
+
+        if (!uvasProject) {
             await this.finishFlowWithProjectMenu(
                 dbContact,
                 waId,
                 conversation,
-                '✍️ Em breve você poderá preencher o relatório de presença no culto por aqui!',
+                '❌ Não consegui localizar o projeto Uvas para iniciar o preenchimento do relatório.',
                 dbContact?.projectId
             );
-        } else {
-            // "preencher relatório da célula"
+            return { handled: true, stopProcessing: true };
+        }
+
+        const leaderData = await this.projectAdapterRegistry.getLeaderCells(uvasProject, dbContact.waId);
+        const cells = leaderData?.cells || [];
+
+        if (!cells.length) {
             await this.finishFlowWithProjectMenu(
                 dbContact,
                 waId,
                 conversation,
-                '✍️ Em breve você poderá preencher o relatório da célula por aqui!',
-                dbContact?.projectId
+                '❌ Você não é líder ou líder em treinamento de nenhuma célula.',
+                uvasProject.id
+            );
+            return { handled: true, stopProcessing: true };
+        }
+
+        if (cells.length === 1) {
+            return this.startReportFlowForLatestWeek(
+                dbContact,
+                waId,
+                conversation,
+                uvasProject,
+                cells[0].id,
+                forcedReportType,
+                { cells, selectedCellId: cells[0].id, forcedReportType }
             );
         }
 
+        await this.prisma.conversationSession.update({
+            where: { contactId: dbContact.id },
+            data: {
+                activeProjectId: uvasProject.id,
+                currentActionKey: 'uvas_report_select_cell',
+                contextJson: {
+                    cells,
+                    forcedReportType,
+                } as any,
+            },
+        });
+
+        const reportLabel = forcedReportType === 'culto' ? 'culto' : 'célula';
+        let menuText = `*Preenchimento de relatório de ${reportLabel}*\n\n`;
+        menuText += 'Escolha a célula para continuar:\n\n';
+        cells.forEach((cell: any, idx: number) => {
+            menuText += `${idx + 1} - ${cell.name || `Célula #${cell.id}`}\n`;
+        });
+        menuText += '\n❌ Digite *cancelar* para voltar.';
+
+        await this.sendAndSave(waId, menuText, conversation.id, dbContact.id);
+
         return { handled: true, stopProcessing: true };
+    }
+
+    private async startReportFlowForLatestWeek(
+        dbContact: any,
+        waId: string,
+        conversation: any,
+        project: any,
+        cellId: number,
+        reportType: 'culto' | 'celula',
+        contextBase: any,
+    ): Promise<ActionResult> {
+        try {
+            const reportStatus = await this.projectAdapterRegistry.getReportStatus(project, cellId, reportType);
+
+            if (!reportStatus || !Array.isArray(reportStatus.weeks) || reportStatus.weeks.length === 0) {
+                await this.finishFlowWithProjectMenu(
+                    dbContact,
+                    waId,
+                    conversation,
+                    '❌ Não encontrei datas disponíveis para este tipo de relatório.',
+                    project?.id
+                );
+                return { handled: true, stopProcessing: true };
+            }
+
+            const updatedContext = {
+                ...contextBase,
+                selectedCellId: cellId,
+                reportType,
+                reportStatus,
+            };
+
+            await this.prisma.conversationSession.update({
+                where: { contactId: dbContact.id },
+                data: {
+                    activeProjectId: project.id,
+                    currentActionKey: 'uvas_report_select_date',
+                    contextJson: updatedContext as any,
+                },
+            });
+
+            return this.handleReportDateSelection('1', dbContact, waId, conversation, {
+                activeProjectId: project.id,
+                contextJson: updatedContext,
+            } as any);
+        } catch (error) {
+            console.log('Error starting report flow from reminder button:', error);
+            await this.finishFlowWithProjectMenu(
+                dbContact,
+                waId,
+                conversation,
+                '❌ Erro ao iniciar o preenchimento do relatório a partir do lembrete.',
+                project?.id
+            );
+            return { handled: true, stopProcessing: true };
+        }
     }
 
     // ---------- helpers ------------------------------------------------
