@@ -104,9 +104,11 @@ export class ChatWithOwnerTimeoutService {
             }
 
             const duration = Date.now() - startedAtMs;
-            this.logger.log(
-                `Scheduler chat_with_owner concluido em ${duration}ms - ${checkedSessions} sessao(oes) verificadas, ${closedSessions} encerrada(s).`
-            );
+            if (closedSessions >= 1) {
+                this.logger.log(
+                    `Scheduler chat_with_owner concluido em ${duration}ms - ${checkedSessions} sessao(oes) verificadas, ${closedSessions} encerrada(s).`
+                );
+            }
         } catch (error) {
             this.logger.error('Erro ao encerrar chats inativos com owner', error instanceof Error ? error.stack : undefined);
         } finally {
